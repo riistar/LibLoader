@@ -14,14 +14,12 @@ uses Windows, SysUtils, Classes, inifiles;
    TLibLoader = Class
 
    // These variables and methods are not visible outside this class
-   // They are purely used in the implementation below
    private
 
       //Variables
       Locale : TFormatSettings;
       DLLmodule  : Array[0..MAX_PATH] of Char;
       CfgFile: TIniFile;
-      //modDir, FileName:String;{stores the file's name and path}
 
       // Private/Internal Functions
       function    WhereIs( path: string; const filename: string ): string;
@@ -108,10 +106,9 @@ begin
   end;
 end;
 
-// ReadCFGi : Read Integer (0 or 1) from config file
+// ReadCFGb : Read Boolean (0 or 1) from config file
 // ----------------------------------------------------------------------------
 function TLibLoader.ReadCFGb(Section: String; Key: String): Boolean;
-//TPatch.ReadCFG(Section: String; Key: String; STR: Boolean): Integer;
 begin
   GetModuleFileName(hInstance, DLLmodule, Length(DLLmodule));
   CfgFile := TIniFile.Create(ExtractFilePath(DLLmodule)+CONFIG_FILENAME);
@@ -123,10 +120,9 @@ begin
   CfgFile.Free;
 end;
 
-// ReadCFGi : Read Integer (0 or 1) from config file
+// ReadCFGi : Read Integer (Number) from config file
 // ----------------------------------------------------------------------------
 function TLibLoader.ReadCFGi(Section: String; Key: String): Integer;
-//TPatch.ReadCFG(Section: String; Key: String; STR: Boolean): Integer;
 begin
   GetModuleFileName(hInstance, DLLmodule, Length(DLLmodule));
   CfgFile := TIniFile.Create(ExtractFilePath(DLLmodule)+CONFIG_FILENAME);
@@ -138,10 +134,9 @@ begin
   CfgFile.Free;
 end;
 
-// ReadCFGs : Read Integer (0 or 1) from config file
+// ReadCFGs : Read String from config file
 // ----------------------------------------------------------------------------
 function TLibLoader.ReadCFGs(Section: String; Key: String): string;
-//TPatch.ReadCFG(Section: String; Key: String; STR: Boolean): Integer;
 begin
   GetModuleFileName(hInstance, DLLmodule, Length(DLLmodule));
   CfgFile := TIniFile.Create(ExtractFilePath(DLLmodule)+CONFIG_FILENAME);
@@ -166,7 +161,6 @@ function TLibLoader.WhereIs( path: string; const filename: string ): string;
   var
   tsr: TSearchRec;
   begin
-    //Application.ProcessMessages;
     path := IncludeTrailingPathDelimiter(path);
     if FindFirst ( path + '*.*', faDirectory, tsr ) = 0 then begin
     repeat
@@ -283,8 +277,6 @@ begin
             WriteLog('    [Debug] Search Folder: '+ModFolder, DEBUG);
             WriteLog('    -- Search Mod Folder: '+ModFolder, TRUE);
 
-
-
             for File2Load in Files2Load do
             begin
 
@@ -328,7 +320,6 @@ begin
 
     WriteLog('    [Debug] Files remaining: '+IntToStr(Files2Load.Count), DEBUG);
 
-    //if Files2Load.Count > 1 then
 
 //-------------------------------------------------------------------------------------------
 // Default to application/client dir
@@ -337,13 +328,8 @@ begin
     WriteLog('    Search for mods in application/client dir', TRUE);
     WriteLog('    ----------------------------------------------------------------------------------------------------------------', TRUE);
 
-
-    //Files2Load := TStringList.Create();
     try
 
-      //if ReadCFGs('Loader','ModFolder') <> '' then
-      //ModFolder := ReadCFGs('Loader','ModFolder')
-      //else
       ModFolder := GetCurrentDir;
 
       if ModFolder <> '' then
@@ -357,10 +343,8 @@ begin
         WriteLog('    Lib-Loader will recursively search for specified files in the application dir and sub dirs...', TRUE);
       end;
 
-
       WriteLog('    [Debug] Search folder: '+ModFolder, DEBUG);
 
-      //Files2Load.CommaText := ReadCFGs('Loader','Files');
       WriteLog('    [Debug] Files2Load list: '+Files2Load.CommaText, DEBUG);
 
       for File2Load in Files2Load do
@@ -381,8 +365,6 @@ begin
         else WriteLog(Format('    [Error] %s', ['LoadLib failed, unable to find '+LoadFile+' !']),TRUE);
 
       end;
-
-      //Loader(Files2Load, ModFolder);
 
     finally
 
