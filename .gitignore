@@ -7,3 +7,5 @@ Core/*.dcu
 *.dll
 *.dproj
 *.res
+*.zip
+*.cfg
