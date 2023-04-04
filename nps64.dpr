@@ -2,7 +2,7 @@ library nps64;
 
 uses
   Windows,
-  Core_LibLoader in 'Source\Core\Core_LibLoader.pas';
+  Core_LibLoader in 'Core\Core_LibLoader.pas';
 
 type
   TOrgFuncs = record
