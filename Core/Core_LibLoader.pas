@@ -247,7 +247,10 @@ begin
 
     // Define delimited text for Mod Folders from Config file. Avoids strings breaking when parsed and path has spaces between text.
     ModFolders.Delimiter := ',';
-    ModFolders.StrictDelimiter := True;
+    ModFolders.StrictDelimiter := TRUE;
+    // Define delimited text for Mod Files from Config file. Avoids strings breaking when parsed and filename has spaces between text.
+    Files2Load.Delimiter := ',';
+    Files2Load.StrictDelimiter := TRUE;
 
     try
       // Get Mod Folders from config and parse each folder-string without breaking if there are spaces in the string item
@@ -256,8 +259,8 @@ begin
       WriteLog('    [Debug] '+IntToStr(ModFolders.Count)+' mod directories listed in config.', DEBUG);
       WriteLog('    [Debug] Mod directory list in CFG: '+ModFolders.DelimitedText, DEBUG);
 
-      // Load Mod file list from config CFG
-      Files2Load.CommaText := ReadCFG(Config,'Loader','Files', '');
+      // Load Mod file list from config CFG and parse each file-string without breaking if there are spaces in the string item
+      Files2Load.DelimitedText := StringReplace(ReadCFG(Config,'Loader','Files', ''), ', ', ',', [rfReplaceAll]);
       WriteLog('    [Debug] CFG -> Files2Load list: '+Files2Load.DelimitedText, DEBUG);
 
       if ModFolders.Count <> 0 then
