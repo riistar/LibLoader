@@ -7,11 +7,11 @@ unit Core_LibLoader;
 
 interface
 
-uses Windows, SysUtils, Classes, inifiles;
+uses Windows, SysUtils, Classes, inifiles, Variants;
 
  type
    // Define the new class instance
-   TLibLoader = Class
+   LibLoader = Class
 
    // These variables and methods are not visible outside this class
    private
@@ -32,9 +32,12 @@ uses Windows, SysUtils, Classes, inifiles;
       Procedure Execute;
       Procedure WriteLog(Data : string; Enabled: Boolean);
       // Functions to read ini config file types
+      {
       function ReadCFGs(Section: String; Key: String): string;
       function ReadCFGi(Section: String; Key: String): Integer;
       function ReadCFGb(Section: String; Key: String): Boolean;
+      }
+      function ReadCFG(const FileName: string; const Section, Key: string; const DefaultValue: Variant): Variant;
 
    end;
 
@@ -47,12 +50,13 @@ uses Windows, SysUtils, Classes, inifiles;
     DEBUG : Boolean = TRUE;
     Success : Boolean = FALSE;
     Files2Load, FilesLoaded : TStringList;
+    Config : String;
 
 implementation
 
 // Constructor : Create an instance of the class. Takes a string as argument.
 // -----------------------------------------------------------------------------
-constructor TLibLoader.Create();
+constructor LibLoader.Create();
 begin
   DeleteFile(LOG_FILENAME);
   FilesLoaded := TStringList.Create();
@@ -62,6 +66,9 @@ begin
   WriteLog('    Initializing...', TRUE);
 
   GetModuleFileName(hInstance, DLLmodule, Length(DLLmodule));
+
+  // Set Config path+file globally
+  Config := ExtractFilePath(DLLmodule)+CONFIG_FILENAME;
 
   CfgFile := TIniFile.Create(ExtractFilePath(DLLmodule)+CONFIG_FILENAME);
 
@@ -86,7 +93,7 @@ begin
   CfgFile.Free;
 end;
 
-Procedure TLibLoader.WriteLog(Data : string; Enabled: Boolean);
+Procedure LibLoader.WriteLog(Data : string; Enabled: Boolean);
 var
    LogFile : TextFile;
    formattedDateTime : string;
@@ -106,51 +113,34 @@ begin
   end;
 end;
 
-// ReadCFGb : Read Boolean (0 or 1) from config file
-// ----------------------------------------------------------------------------
-function TLibLoader.ReadCFGb(Section: String; Key: String): Boolean;
+// Reads Config value based on Type
+{
+  Str  := ReadCFG('myconfig.ini', 'Section1', 'Key1', 'DefaultString');
+  Int  := ReadCFG('myconfig.ini', 'Section2', 'Key2', 123);
+  Bool := ReadCFG('myconfig.ini', 'Section3', 'Key3', True);
+}
+function LibLoader.ReadCFG(const FileName: string; const Section, Key: string; const DefaultValue: Variant): Variant;
+var
+  IniFile: TIniFile;
 begin
-  GetModuleFileName(hInstance, DLLmodule, Length(DLLmodule));
-  CfgFile := TIniFile.Create(ExtractFilePath(DLLmodule)+CONFIG_FILENAME);
-
-  with CfgFile do
-  begin
-      Result := ReadBool(Section, Key, FALSE);
+  IniFile := TIniFile.Create(FileName);
+  try
+    case VarType(DefaultValue) of
+      varInteger:
+        Result := IniFile.ReadInteger(Section, Key, DefaultValue);
+      varBoolean:
+        Result := IniFile.ReadBool(Section, Key, DefaultValue);
+    else
+      Result := IniFile.ReadString(Section, Key, DefaultValue);
+    end;
+  finally
+    IniFile.Free;
   end;
-  CfgFile.Free;
-end;
-
-// ReadCFGi : Read Integer (Number) from config file
-// ----------------------------------------------------------------------------
-function TLibLoader.ReadCFGi(Section: String; Key: String): Integer;
-begin
-  GetModuleFileName(hInstance, DLLmodule, Length(DLLmodule));
-  CfgFile := TIniFile.Create(ExtractFilePath(DLLmodule)+CONFIG_FILENAME);
-
-  with CfgFile do
-  begin
-      Result := ReadInteger(Section, Key, 0);
-  end;
-  CfgFile.Free;
-end;
-
-// ReadCFGs : Read String from config file
-// ----------------------------------------------------------------------------
-function TLibLoader.ReadCFGs(Section: String; Key: String): string;
-begin
-  GetModuleFileName(hInstance, DLLmodule, Length(DLLmodule));
-  CfgFile := TIniFile.Create(ExtractFilePath(DLLmodule)+CONFIG_FILENAME);
-
-  with CfgFile do
-  begin
-      Result := ReadString(Section, Key, '');
-  end;
-  CfgFile.Free;
 end;
 
 //========================================================================================================================
 // Recursive file search, returning location if found.
-function TLibLoader.WhereIs( path: string; const filename: string ): string;
+function LibLoader.WhereIs( path: string; const filename: string ): string;
 
   function IsDirectory ( const tsr: TSearchRec ): boolean;
   begin
@@ -182,7 +172,7 @@ end;
 
 //========================================================================================================================
 // Load DLL libs
-procedure TLibLoader.LoadLib(dllname: PWideChar);
+procedure LibLoader.LoadLib(dllname: PWideChar);
 var
   h:  HMODULE;
   Index : Integer;
@@ -240,11 +230,11 @@ begin
 
 end;
 
-Procedure TLibLoader.Execute;
+Procedure LibLoader.Execute;
 var
-    File2Load, ModLoaded, LoadFile, ModFile, ModFolder : String;
+    File2Load, LoadFile, ModFile, ModFolder : String;
     ModFolders : TStringList;
-    Index : Integer;
+    //Index : Integer;
 begin
 
     WriteLog('    Lib-Loader will recursively search for specified files in listed mod directories and sub dirs...', TRUE);
@@ -255,13 +245,20 @@ begin
     ModFolders := TStringList.Create();
     Files2Load := TStringList.Create();
 
-    try
-      ModFolders.CommaText := ReadCFGs('Loader','ModFolders');
-      WriteLog('    [Debug] '+IntToStr(ModFolders.Count)+' mod directories listed in config.', DEBUG);
-      WriteLog('    [Debug] Mod directory list in CFG: '+ModFolders.CommaText, DEBUG);
+    // Define delimited text for Mod Folders from Config file. Avoids strings breaking when parsed and path has spaces between text.
+    ModFolders.Delimiter := ',';
+    ModFolders.StrictDelimiter := True;
 
-      Files2Load.CommaText := ReadCFGs('Loader','Files');
-      WriteLog('    [Debug] CFG -> Files2Load list: '+Files2Load.CommaText, DEBUG);
+    try
+      // Get Mod Folders from config and parse each folder-string without breaking if there are spaces in the string item
+      ModFolders.DelimitedText := StringReplace(ReadCFG(Config,'Loader','ModFolders', ''), ', ', ',', [rfReplaceAll]);
+
+      WriteLog('    [Debug] '+IntToStr(ModFolders.Count)+' mod directories listed in config.', DEBUG);
+      WriteLog('    [Debug] Mod directory list in CFG: '+ModFolders.DelimitedText, DEBUG);
+
+      // Load Mod file list from config CFG
+      Files2Load.CommaText := ReadCFG(Config,'Loader','Files', '');
+      WriteLog('    [Debug] CFG -> Files2Load list: '+Files2Load.DelimitedText, DEBUG);
 
       if ModFolders.Count <> 0 then
       begin
@@ -285,14 +282,18 @@ begin
               WriteLog('    ---- [Debug] Files2Load List: '+Files2Load.CommaText, DEBUG);
               WriteLog('    [Debug] Recursively Looking for file: '+ModFile+' in '+ModFolder+' and sub dirs...', DEBUG);
               LoadFile := WhereIs(ModFolder,ModFile)+File2Load;
-              WriteLog('    [Debug] WhereIs returned: '+LoadFile, DEBUG);
 
-              if FileExists(LoadFile) then
+              if ExtractFilePath(LoadFile) <> '' then
               begin
-                WriteLog(Format('    [LoadLib] %s', ['Mod file found, loading '+ModFile+' ...']),TRUE);
-                LoadLib(PWideChar(LoadFile));
-              end
-              else WriteLog(Format('    [Error] %s', ['LoadLib failed, unable to find '+LoadFile+' !']),TRUE);
+                WriteLog('    [Debug] WhereIs returned: '+LoadFile, DEBUG);
+
+                if FileExists(LoadFile) then
+                begin
+                  WriteLog(Format('    [LoadLib] %s', ['Mod file found, loading '+ModFile+' ...']),TRUE);
+                  LoadLib(PWideChar(LoadFile));
+                end
+                else WriteLog(Format('    [Error] %s', ['LoadLib failed, unable to find '+LoadFile+' !']),TRUE);
+              end;
 
             end;
 
@@ -320,60 +321,68 @@ begin
 
     WriteLog('    [Debug] Files remaining: '+IntToStr(Files2Load.Count), DEBUG);
 
+    if Files2Load.Count > 0 then
+    begin
 
-//-------------------------------------------------------------------------------------------
-// Default to application/client dir
+  //-------------------------------------------------------------------------------------------
+  // Default to application/client dir
 
-    WriteLog('', TRUE);
-    WriteLog('    Search for mods in application/client dir', TRUE);
-    WriteLog('    ----------------------------------------------------------------------------------------------------------------', TRUE);
+      WriteLog('', TRUE);
+      WriteLog('    Search for mods in application/client dir', TRUE);
+      WriteLog('    ----------------------------------------------------------------------------------------------------------------', TRUE);
 
-    try
+      try
 
-      ModFolder := GetCurrentDir;
+        ModFolder := GetCurrentDir;
 
-      if ModFolder <> '' then
-      begin
-        WriteLog('    Application/Client Folder: '+ModFolder, TRUE);
-        WriteLog('    Lib-Loader will recursively search for specified files in '+ModFolder+' and sub dirs...', TRUE)
-      end
-      else
-      begin
-        WriteLog('    Mod Folder: None specified, defaulting to application/client dir.', TRUE);
-        WriteLog('    Lib-Loader will recursively search for specified files in the application dir and sub dirs...', TRUE);
-      end;
-
-      WriteLog('    [Debug] Search folder: '+ModFolder, DEBUG);
-
-      WriteLog('    [Debug] Files2Load list: '+Files2Load.CommaText, DEBUG);
-
-      for File2Load in Files2Load do
-      begin
-
-        ModFile := File2Load;
-
-        WriteLog('    ---- [Debug] Files2Load List: '+Files2Load.CommaText, DEBUG);
-        WriteLog('    [Debug] Recursively Looking for file: '+ModFile+' in '+ModFolder+' and sub dirs...', DEBUG);
-        LoadFile := WhereIs(ModFolder,ModFile)+File2Load;
-        WriteLog('    [Debug] WhereIs returned: '+LoadFile, DEBUG);
-
-        if FileExists(LoadFile) then
+        if ModFolder <> '' then
         begin
-          WriteLog(Format('    [LoadLib] %s', ['Mod file found, loading '+ModFile+' ...']),TRUE);
-          LoadLib(PWideChar(LoadFile));
+          WriteLog('    Application/Client Folder: '+ModFolder, TRUE);
+          WriteLog('    Lib-Loader will recursively search for specified files in '+ModFolder+' and sub dirs...', TRUE)
         end
-        else WriteLog(Format('    [Error] %s', ['LoadLib failed, unable to find '+LoadFile+' !']),TRUE);
+        else
+        begin
+          WriteLog('    Mod Folder: None specified, defaulting to application/client dir.', TRUE);
+          WriteLog('    Lib-Loader will recursively search for specified files in the application dir and sub dirs...', TRUE);
+        end;
+
+        WriteLog('    [Debug] Search folder: '+ModFolder, DEBUG);
+
+        WriteLog('    [Debug] Files2Load list: '+Files2Load.CommaText, DEBUG);
+
+        for File2Load in Files2Load do
+        begin
+
+          ModFile := File2Load;
+
+          WriteLog('    ---- [Debug] Files2Load List: '+Files2Load.CommaText, DEBUG);
+          WriteLog('    [Debug] Recursively Looking for file: '+ModFile+' in '+ModFolder+' and sub dirs...', DEBUG);
+          LoadFile := WhereIs(ModFolder,ModFile)+File2Load;
+          WriteLog('    [Debug] WhereIs returned: '+LoadFile, DEBUG);
+
+          if FileExists(LoadFile) then
+          begin
+            WriteLog(Format('    [LoadLib] %s', ['Mod file found, loading '+ModFile+' ...']),TRUE);
+            LoadLib(PWideChar(LoadFile));
+          end
+          else WriteLog(Format('    [Error] %s', ['LoadLib failed, unable to find '+LoadFile+' !']),TRUE);
+
+        end;
+
+      finally
 
       end;
-
-    finally
 
     end;
 
+
     WriteLog('', TRUE);
     WriteLog('    ----------------------------------------------------------------------------------------------------------------', TRUE);
-    WriteLog('    Loaded File list: '+FilesLoaded.CommaText, TRUE);
-    WriteLog('    ('+IntToStr(Files2Load.Count)+') Remaining unloaded files: '+Files2Load.CommaText, TRUE);
+    WriteLog('    Loaded File(s) list: '+FilesLoaded.CommaText, TRUE);
+
+    if Files2Load.Count > 0 then WriteLog('    ('+IntToStr(Files2Load.Count)+') Remaining unloaded files: '+Files2Load.CommaText, TRUE)
+    else WriteLog('    All specified files loaded!', TRUE);
+
     WriteLog('    Operation completed.', TRUE);
 
     Files2Load.Free;
@@ -385,24 +394,24 @@ end;
 //========================================================================================================================
 //All code below is excuted when this module is loaded according to compile order
 var
-  LibLoading  : TLibLoader;
+  LibLoading  : LibLoader;
 
 initialization
 
-  LibLoading := TLibLoader.Create();
+  LibLoading := LibLoader.Create();
 
   LibLoading.WriteLog('', TRUE);
   LibLoading.WriteLog('Chain Loader Initializing...', TRUE);
   LibLoading.WriteLog('====================================================================================================================', TRUE);
 
-  if LibLoading.ReadCFGb('Loader','Enabled') = TRUE and (LibLoading.ReadCFGs('Loader','Files') <> '') then
+  if LibLoading.ReadCFG(Config,'Loader','Enabled',FALSE) and (LibLoading.ReadCFG(Config,'Loader','Files', '') <> '') then
   begin
     LibLoading.WriteLog('    Executing...', TRUE);
     LibLoading.Execute;
   end
   else
   begin
-    if LibLoading.ReadCFGs('Loader','Files') = '' then LibLoading.WriteLog('    [Notice] No files specified.', TRUE);
+    if LibLoading.ReadCFG(Config,'Loader','Files', '') = '' then LibLoading.WriteLog('    [Notice] No files specified.', TRUE);
     LibLoading.WriteLog('    [Notice] LoadLib (Chain loading) skipped.', TRUE);
     LibLoading.Free;
   end;
@@ -414,4 +423,3 @@ finalization
   LibLoading.Free;
 
 end.
-
