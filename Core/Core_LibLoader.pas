@@ -140,8 +140,7 @@ begin
     ELSE
       Append(LogFile);
     GetLocaleFormatSettings(LOCALE_SYSTEM_DEFAULT, Locale);
-    DateTimeToString(formattedDateTime, Locale.ShortDateFormat +
-      ' hh:nnampm', now);
+    DateTimeToString(formattedDateTime, Locale.ShortDateFormat + ' hh:nnampm', now);
     WriteLn(LogFile, '[' + formattedDateTime + '] ' + Data);
     CloseFile(LogFile);
   end;
@@ -222,25 +221,20 @@ begin
 
     if h = 0 then
     begin;
-      WriteLog(Format('    [Error] %s', ['LoadLib failed, unable to load ' +
-        dllname]), TRUE);
+      WriteLog(Format('    [Error] %s', ['LoadLib failed, unable to load ' + dllname]));
       Success := FALSE;
     end
     else
     begin
-      WriteLog(Format('    [LoadLib] %s',
-        ['Success, loaded ' + dllname]), TRUE);
+      WriteLog(Format('    [LoadLib] %s',['Success, loaded ' + dllname]));
       Success := TRUE;
 
       FilesLoaded.Add(ExtractFileName(dllname));
-      WriteLog('    -- [Debug] Added ' + ExtractFileName(dllname) +
-        ' to Files Loaded list', DEBUG);
-      WriteLog('    -- [Debug] Updated Files Loaded list: ' +
-        FilesLoaded.CommaText, DEBUG);
+      WriteLog('    -- [Debug] Added ' + ExtractFileName(dllname) + ' to Files Loaded list', DEBUG);
+      WriteLog('    -- [Debug] Updated Files Loaded list: ' + FilesLoaded.CommaText, DEBUG);
 
       Index := Files2Load.IndexOf(ModFile);
-      WriteLog('    -- [Debug] Get ' + ModFile +
-        ' file index in File2Load list: ' + IntToStr(Index), DEBUG);
+      WriteLog('    -- [Debug] Get ' + ModFile + ' file index in File2Load list: ' + IntToStr(Index), DEBUG);
 
       Try
         if Index <> -1 then
@@ -248,20 +242,16 @@ begin
           WriteLog('    -- [Debug] Removing: ' + ModFile, DEBUG);
           ModFile := Files2Load.ValueFromIndex[0];
           Files2Load.Delete(Index);
-          WriteLog('    -- [Debug] Amended Files2Load List: ' +
-            Files2Load.CommaText, DEBUG);
+          WriteLog('    -- [Debug] Amended Files2Load List: ' + Files2Load.CommaText, DEBUG);
         end
         else
-          WriteLog('    -- [Debug] Index of Files2Load was not removed...',
-            DEBUG);
+          WriteLog('    -- [Debug] Index of Files2Load was not removed...',DEBUG);
 
       except
         on E: Exception do
         begin
-          WriteLog('[Error] ' + E.ClassName + ' error raised, with message : ' +
-            E.Message);
-          WriteLog('    -- [Debug] Failed? Amended Files2Load List: ' +
-            Files2Load.CommaText, DEBUG);
+          WriteLog('[Error] ' + E.ClassName + ' error raised, with message : ' + E.Message);
+          WriteLog('    -- [Debug] Failed? Amended Files2Load List: ' + Files2Load.CommaText, DEBUG);
         end;
       end;
     end;
@@ -269,10 +259,8 @@ begin
   end
   else
   begin
-    WriteLog('    -- [Debug] File ' + dllname +
-      ' not found at this location...', DEBUG);
-    WriteLog(Format('    [Error] %s', ['LoadLib failed, unable to load ' +
-      dllname]), TRUE);
+    WriteLog('    -- [Debug] File ' + dllname + ' not found at this location...', DEBUG);
+    WriteLog(Format('    [Error] %s', ['LoadLib failed, unable to load ' + dllname]));
     Success := FALSE;
   end;
 
@@ -306,19 +294,14 @@ begin
   try
     // Get Mod Folders from config and parse each folder-string without breaking if there are spaces in the string item
     ModFolders.DelimitedText :=
-      StringReplace(ReadCFG(Config, 'Loader', 'ModFolders', ''), ', ', ',',
-      [rfReplaceAll]);
+      StringReplace(ReadCFG(Config, 'Loader', 'ModFolders', ''), ', ', ',',[rfReplaceAll]);
 
-    WriteLog('    [Debug] ' + IntToStr(ModFolders.Count) +
-      ' mod directories listed in config.', DEBUG);
-    WriteLog('    [Debug] Mod directory list in CFG: ' +
-      ModFolders.DelimitedText, DEBUG);
+    WriteLog('    [Debug] ' + IntToStr(ModFolders.Count) + ' mod directories listed in config.', DEBUG);
+    WriteLog('    [Debug] Mod directory list in CFG: ' + ModFolders.DelimitedText, DEBUG);
 
     // Load Mod file list from config CFG and parse each file-string without breaking if there are spaces in the string item
-    Files2Load.DelimitedText := StringReplace(ReadCFG(Config, 'Loader', 'Files',
-      ''), ', ', ',', [rfReplaceAll]);
-    WriteLog('    [Debug] CFG -> Files2Load list: ' +
-      Files2Load.DelimitedText, DEBUG);
+    Files2Load.DelimitedText := StringReplace(ReadCFG(Config, 'Loader', 'Files',''), ', ', ',', [rfReplaceAll]);
+    WriteLog('    [Debug] CFG -> Files2Load list: ' + Files2Load.DelimitedText, DEBUG);
 
     ModFiles := Files2Load;
 
@@ -347,8 +330,7 @@ begin
 
             WriteLog('    ---- [Debug] Files2Load List: ' +
               Files2Load.CommaText, DEBUG);
-            WriteLog('    [Debug] Recursively Looking for file: ' + ModFile +
-              ' in ' + ModFolder + ' and sub dirs...', DEBUG);
+            WriteLog('    [Debug] Recursively Looking for file: ' + ModFile + ' in ' + ModFolder + ' and sub dirs...', DEBUG);
 
             FileLoc := WhereIs(ModFolder, ModFile);
             if FileLoc <> '' then
@@ -356,8 +338,7 @@ begin
             else
               FileLoc := 'File not found...';
 
-            WriteLog('    [Debug] Running WhereIs(' + ModFolder + '\' + ModFile
-              + '): ' + FileLoc, DEBUG);
+            WriteLog('    [Debug] Running WhereIs(' + ModFolder + '\' + ModFile + '): ' + FileLoc, DEBUG);
 
             if (FileLoc <> '') or (FileLoc <> 'File not found...') then
             begin
@@ -366,23 +347,19 @@ begin
 
               if FileExists(File2Load) then
               begin
-                WriteLog(Format('    [LoadLib] %s',
-                  ['Mod file found, loading ' + ModFile + ' ...']), TRUE);
+                WriteLog(Format('    [LoadLib] %s', ['Mod file found, loading ' + ModFile + ' ...']));
                 LoadLib(PWideChar(File2Load));
               end
               else
-                WriteLog(Format('    [Error] %s',
-                  ['LoadLib failed, unable to find ' + ModFile + ' !']), TRUE);
+                WriteLog(Format('    [Error] %s', ['LoadLib failed, unable to find ' + ModFile + ' !']));
             end;
 
             Inc(FilesChecked);
 
           end;
 
-          WriteLog('    [Debug] Loaded File list: ' +
-            FilesLoaded.CommaText, DEBUG);
-          WriteLog('    [Debug] Files Checked: ' +
-            IntToStr(FilesChecked), DEBUG);
+          WriteLog('    [Debug] Loaded File list: ' + FilesLoaded.CommaText, DEBUG);
+          WriteLog('    [Debug] Files Checked: ' + IntToStr(FilesChecked), DEBUG);
 
         end;
 
@@ -390,14 +367,12 @@ begin
           Goto LoadMod;
 
       finally
-        WriteLog('    -- [Debug] Remaining unloaded files (' +
-          IntToStr(Files2Load.Count) + '): ' + Files2Load.CommaText, DEBUG);
+        WriteLog('    -- [Debug] Remaining unloaded files (' + IntToStr(Files2Load.Count) + '): ' + Files2Load.CommaText, DEBUG);
         WriteLog('    [LoadLib] Recursive directory search has completed...');
       end;
 
       if Files2Load.Count > 0 then
-        WriteLog('    Files remaining (' + IntToStr(Files2Load.Count) + '): ' +
-          Files2Load.CommaText);
+        WriteLog('    Files remaining (' + IntToStr(Files2Load.Count) + '): ' + Files2Load.CommaText);
 
     end
     else
@@ -453,8 +428,7 @@ begin
 
         WriteLog('    ---- [Debug] Files2Load List: ' +
           Files2Load.CommaText, DEBUG);
-        WriteLog('    [Debug] Recursively Looking for file: ' + ModFile + ' in '
-          + ModFolder + ' and sub dirs...', DEBUG);
+        WriteLog('    [Debug] Recursively Looking for file: ' + ModFile + ' in '+ ModFolder + ' and sub dirs...', DEBUG);
 
         FileLoc := WhereIs(ModFolder, ModFile);
         if FileLoc <> '' then
@@ -462,8 +436,7 @@ begin
         else
           FileLoc := 'File not found...';
 
-        WriteLog('    [Debug] Running WhereIs(' + ModFolder + '\' + ModFile +
-          '): ' + FileLoc, DEBUG);
+        WriteLog('    [Debug] Running WhereIs(' + ModFolder + '\' + ModFile + '): ' + FileLoc, DEBUG);
 
         if (FileLoc <> '') or (FileLoc <> 'File not found...') then
         begin
@@ -472,13 +445,11 @@ begin
 
           if FileExists(File2Load) then
           begin
-            WriteLog(Format('    [LoadLib] %s',
-              ['Mod file found, loading ' + ModFile + ' ...']), TRUE);
+            WriteLog(Format('    [LoadLib] %s', ['Mod file found, loading ' + ModFile + ' ...']));
             LoadLib(PWideChar(File2Load));
           end
           else
-            WriteLog(Format('    [Error] %s',
-              ['LoadLib failed, unable to find ' + ModFile + ' !']), TRUE);
+            WriteLog(Format('    [Error] %s', ['LoadLib failed, unable to find ' + ModFile + ' !']));
         end;
 
         Inc(FilesChecked);
@@ -499,8 +470,7 @@ begin
   WriteLog('    Loaded File(s) list: ' + FilesLoaded.CommaText);
 
   if Files2Load.Count > 0 then
-    WriteLog('    (' + IntToStr(Files2Load.Count) +
-      ') Remaining unloaded files: ' + Files2Load.CommaText)
+    WriteLog('    (' + IntToStr(Files2Load.Count) + ') Remaining unloaded files: ' + Files2Load.CommaText)
   else
     WriteLog('    All specified files loaded!');
 
@@ -524,8 +494,7 @@ LibLoading.WriteLog('');
 LibLoading.WriteLog('Chain Loader Initializing...');
 LibLoading.WriteLog('====================================================================================================================');
 
-if LibLoading.ReadCFG(Config, 'Loader', 'Enabled', FALSE) and
-  (LibLoading.ReadCFG(Config, 'Loader', 'Files', '') <> '') then
+if LibLoading.ReadCFG(Config, 'Loader', 'Enabled', FALSE) and (LibLoading.ReadCFG(Config, 'Loader', 'Files', '') <> '') then
 begin
   LibLoading.WriteLog('    Executing...');
   LibLoading.Execute;
@@ -533,7 +502,7 @@ end
 else
 begin
   if LibLoading.ReadCFG(Config, 'Loader', 'Files', '') = '' then
-    LibLoading.WriteLog('    [Notice] No files specified.');
+  LibLoading.WriteLog('    [Notice] No files specified.');
   LibLoading.WriteLog('    [Notice] LoadLib (Chain loading) skipped.');
   LibLoading.Free;
 end;
