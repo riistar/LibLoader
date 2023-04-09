@@ -2,6 +2,7 @@ library nps64;
 
 uses
   Windows,
+  System.AnsiStrings,
   Core_LibLoader in 'Core\Core_LibLoader.pas';
 
 type
