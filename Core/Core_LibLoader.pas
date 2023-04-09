@@ -27,18 +27,11 @@ uses Windows, SysUtils, Classes, inifiles, Variants;
 
    // The following methods/functions/procedures and properties are all usable by instances of the class
    published
-
       constructor Create; // Called when creating an instance (object) from this class
       Procedure Execute;
-      Procedure WriteLog(Data : string; Enabled: Boolean);
-      // Functions to read ini config file types
-      {
-      function ReadCFGs(Section: String; Key: String): string;
-      function ReadCFGi(Section: String; Key: String): Integer;
-      function ReadCFGb(Section: String; Key: String): Boolean;
-      }
+      Procedure WriteLog(Data : string; Enabled: Boolean = TRUE);
       function ReadCFG(const FileName: string; const Section, Key: string; const DefaultValue: Variant): Variant;
-
+      function GetDLLVersion(const DLLPath: string): string;
    end;
 
    const
@@ -61,11 +54,15 @@ begin
   DeleteFile(LOG_FILENAME);
   FilesLoaded := TStringList.Create();
 
-  WriteLog(MODULE_NAME, TRUE);
-  WriteLog('====================================================================================================================', TRUE);
-  WriteLog('    Initializing...', TRUE);
+  WriteLog(MODULE_NAME);
+  WriteLog('====================================================================================================================');
+  WriteLog('    Initializing...');
 
   GetModuleFileName(hInstance, DLLmodule, Length(DLLmodule));
+
+  WriteLog('    Module: '+ExtractFileName(DLLmodule));
+  WriteLog('    Version: '+GetDLLVersion(DLLmodule));
+  WriteLog('    Config File: '+ExtractFilePath(DLLmodule)+CONFIG_FILENAME);
 
   // Set Config path+file globally
   Config := ExtractFilePath(DLLmodule)+CONFIG_FILENAME;
@@ -78,22 +75,60 @@ begin
       FALSE:
       begin
         DEBUG := FALSE;
-        WriteLog('    Debug Output: FALSE', TRUE);
+        WriteLog('    Debug Output: FALSE');
       end;
       TRUE:
       begin
         DEBUG := TRUE;
-        WriteLog('    Debug Output: TRUE', TRUE);
+        WriteLog('    Debug Output: TRUE');
       end;
     end;
   end;
 
-  WriteLog('    [Debug] Module Name: '+ExtractFileName(DLLmodule), DEBUG);
-  WriteLog('    Config File: '+ExtractFilePath(DLLmodule)+CONFIG_FILENAME, TRUE);
   CfgFile.Free;
 end;
 
-Procedure LibLoader.WriteLog(Data : string; Enabled: Boolean);
+
+function LibLoader.GetDLLVersion(const DLLPath: string): string;
+var
+  Size: DWORD;
+  Buffer: Pointer;
+  VerInfo: PVSFixedFileInfo;
+begin
+  Result := '';
+
+  // Get the size of the version information
+  Size := GetFileVersionInfoSize(PChar(DLLPath), Size);
+  if Size = 0 then
+    Exit;
+
+  // Allocate memory for the version information
+  GetMem(Buffer, Size);
+  try
+    // Get the version information
+    if GetFileVersionInfo(PChar(DLLPath), 0, Size, Buffer) then
+    begin
+      // Get the fixed file info
+      VerInfo := nil;
+      VerQueryValue(Buffer, '\', Pointer(VerInfo), Size);
+
+      // Build the version string
+      if VerInfo <> nil then
+      begin
+        Result := Format('%d.%d.%d.%d', [
+          HiWord(VerInfo^.dwFileVersionMS),
+          LoWord(VerInfo^.dwFileVersionMS),
+          HiWord(VerInfo^.dwFileVersionLS),
+          LoWord(VerInfo^.dwFileVersionLS)]);
+      end;
+    end;
+  finally
+    FreeMem(Buffer);
+  end;
+end;
+
+
+Procedure LibLoader.WriteLog(Data : string; Enabled: Boolean = TRUE);
 var
    LogFile : TextFile;
    formattedDateTime : string;
@@ -117,7 +152,7 @@ end;
 {
   Str  := ReadCFG('myconfig.ini', 'Section1', 'Key1', 'DefaultString');
   Int  := ReadCFG('myconfig.ini', 'Section2', 'Key2', 123);
-  Bool := ReadCFG('myconfig.ini', 'Section3', 'Key3', True);
+  Bool := ReadCFG('myconfig.ini', 'Section3', 'Key3');
 }
 function LibLoader.ReadCFG(const FileName: string; const Section, Key: string; const DefaultValue: Variant): Variant;
 var
@@ -214,7 +249,7 @@ begin
       except
         on E : Exception do
         begin
-          WriteLog('[Error] '+E.ClassName+' error raised, with message : '+E.Message, TRUE);
+          WriteLog('[Error] '+E.ClassName+' error raised, with message : '+E.Message);
           WriteLog('    -- [Debug] Failed? Amended Files2Load List: '+Files2Load.CommaText, DEBUG);
         end;
       End;
@@ -237,7 +272,7 @@ var
     //Index : Integer;
 begin
 
-    WriteLog('    Lib-Loader will recursively search for specified files in listed mod directories and sub dirs...', TRUE);
+    WriteLog('    Lib-Loader will recursively search for specified files in listed mod directories and sub dirs...');
 
 //-------------------------------------------------------------------------------------------
 // Multi Mod dir
@@ -266,16 +301,16 @@ begin
       if ModFolders.Count <> 0 then
       begin
 
-        WriteLog('', TRUE);
-        WriteLog('    Search for mods in specified directories and sub dirs', TRUE);
-        WriteLog('    ----------------------------------------------------------------------------------------------------------------', TRUE);
+        WriteLog('');
+        WriteLog('    Search for mods in specified directories and sub dirs');
+        WriteLog('    ----------------------------------------------------------------------------------------------------------------');
 
         try
 
           for ModFolder in ModFolders do
           begin
             WriteLog('    [Debug] Search Folder: '+ModFolder, DEBUG);
-            WriteLog('    -- Search Mod Folder: '+ModFolder, TRUE);
+            WriteLog('    -- Search Mod Folder: '+ModFolder);
 
             for File2Load in Files2Load do
             begin
@@ -306,14 +341,14 @@ begin
           end;
 
         finally
-          WriteLog('    [LoadLib] Recursive directory loading has completed...', TRUE);
+          WriteLog('    [LoadLib] Recursive directory loading has completed...');
         end;
 
       end
       else
       begin
         ModFolder := GetCurrentDir;
-        WriteLog('    Mod Folder(s): None specified, defaulting to application/client dir.', TRUE);
+        WriteLog('    Mod Folder(s): None specified, defaulting to application/client dir.');
       end;
 
 
@@ -330,9 +365,9 @@ begin
   //-------------------------------------------------------------------------------------------
   // Default to application/client dir
 
-      WriteLog('', TRUE);
-      WriteLog('    Search for mods in application/client dir', TRUE);
-      WriteLog('    ----------------------------------------------------------------------------------------------------------------', TRUE);
+      WriteLog('');
+      WriteLog('    Search for mods in application/client dir');
+      WriteLog('    ----------------------------------------------------------------------------------------------------------------');
 
       try
 
@@ -340,13 +375,13 @@ begin
 
         if ModFolder <> '' then
         begin
-          WriteLog('    Application/Client Folder: '+ModFolder, TRUE);
-          WriteLog('    Lib-Loader will recursively search for specified files in '+ModFolder+' and sub dirs...', TRUE)
+          WriteLog('    Application/Client Folder: '+ModFolder);
+          WriteLog('    Lib-Loader will recursively search for specified files in '+ModFolder+' and sub dirs...')
         end
         else
         begin
-          WriteLog('    Mod Folder: None specified, defaulting to application/client dir.', TRUE);
-          WriteLog('    Lib-Loader will recursively search for specified files in the application dir and sub dirs...', TRUE);
+          WriteLog('    Mod Folder: None specified, defaulting to application/client dir.');
+          WriteLog('    Lib-Loader will recursively search for specified files in the application dir and sub dirs...');
         end;
 
         WriteLog('    [Debug] Search folder: '+ModFolder, DEBUG);
@@ -379,14 +414,14 @@ begin
     end;
 
 
-    WriteLog('', TRUE);
-    WriteLog('    ----------------------------------------------------------------------------------------------------------------', TRUE);
-    WriteLog('    Loaded File(s) list: '+FilesLoaded.CommaText, TRUE);
+    WriteLog('');
+    WriteLog('    ----------------------------------------------------------------------------------------------------------------');
+    WriteLog('    Loaded File(s) list: '+FilesLoaded.CommaText);
 
-    if Files2Load.Count > 0 then WriteLog('    ('+IntToStr(Files2Load.Count)+') Remaining unloaded files: '+Files2Load.CommaText, TRUE)
-    else WriteLog('    All specified files loaded!', TRUE);
+    if Files2Load.Count > 0 then WriteLog('    ('+IntToStr(Files2Load.Count)+') Remaining unloaded files: '+Files2Load.CommaText)
+    else WriteLog('    All specified files loaded!');
 
-    WriteLog('    Operation completed.', TRUE);
+    WriteLog('    Operation completed.');
 
     Files2Load.Free;
     FilesLoaded.Free;
@@ -403,19 +438,19 @@ initialization
 
   LibLoading := LibLoader.Create();
 
-  LibLoading.WriteLog('', TRUE);
-  LibLoading.WriteLog('Chain Loader Initializing...', TRUE);
-  LibLoading.WriteLog('====================================================================================================================', TRUE);
+  LibLoading.WriteLog('');
+  LibLoading.WriteLog('Chain Loader Initializing...');
+  LibLoading.WriteLog('====================================================================================================================');
 
   if LibLoading.ReadCFG(Config,'Loader','Enabled',FALSE) and (LibLoading.ReadCFG(Config,'Loader','Files', '') <> '') then
   begin
-    LibLoading.WriteLog('    Executing...', TRUE);
+    LibLoading.WriteLog('    Executing...');
     LibLoading.Execute;
   end
   else
   begin
-    if LibLoading.ReadCFG(Config,'Loader','Files', '') = '' then LibLoading.WriteLog('    [Notice] No files specified.', TRUE);
-    LibLoading.WriteLog('    [Notice] LoadLib (Chain loading) skipped.', TRUE);
+    if LibLoading.ReadCFG(Config,'Loader','Files', '') = '' then LibLoading.WriteLog('    [Notice] No files specified.');
+    LibLoading.WriteLog('    [Notice] LoadLib (Chain loading) skipped.');
     LibLoading.Free;
   end;
 
@@ -426,3 +461,5 @@ finalization
   LibLoading.Free;
 
 end.
+
+

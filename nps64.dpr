@@ -18,6 +18,8 @@ var
   hl: HINST;
   OrgFuncs: TOrgFuncs;
 
+{$R *.RES}
+
 procedure __DLLProc(Reason: Integer);
 begin
   case Reason of
