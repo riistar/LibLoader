@@ -152,24 +152,41 @@ end;
   Int  := ReadCFG('myconfig.ini', 'Section2', 'Key2', 123);
   Bool := ReadCFG('myconfig.ini', 'Section3', 'Key3');
 }
-function LibLoader.ReadCFG(const filename: string; const Section, Key: string;
-  const DefaultValue: Variant): Variant;
+function LibLoader.ReadCFG(const filename: string; const Section, Key: string; const DefaultValue: Variant): Variant;
 var
   IniFile: TIniFile;
 begin
   IniFile := TIniFile.Create(filename);
+
+  {
+  WriteLog('    [Debug] CFG inifile: ' + filename, DEBUG);
+  WriteLog('    [Debug] CFG Section: '+Section, DEBUG);
+  WriteLog('    [Debug] CFG Key: '+Key, DEBUG);
+  }
   try
     case VarType(DefaultValue) of
       varInteger:
+      begin
+        //WriteLog('    [Debug] CFG varType: Integer', DEBUG);
         Result := IniFile.ReadInteger(Section, Key, DefaultValue);
+      end;
       varBoolean:
+      begin
+        //WriteLog('    [Debug] CFG varType: Boolean', DEBUG);
         Result := IniFile.ReadBool(Section, Key, DefaultValue);
+      end
     else
+      begin
+      //WriteLog('    [Debug] CFG varType: String', DEBUG);
       Result := IniFile.ReadString(Section, Key, DefaultValue);
+      end;
     end;
   finally
     IniFile.Free;
   end;
+
+  //WriteLog('    [Debug] CFG result: '+result, DEBUG);
+
 end;
 
 // ========================================================================================================================
@@ -293,8 +310,9 @@ begin
 
   try
     // Get Mod Folders from config and parse each folder-string without breaking if there are spaces in the string item
-    ModFolders.DelimitedText :=
-      StringReplace(ReadCFG(Config, 'Loader', 'ModFolders', ''), ', ', ',',[rfReplaceAll]);
+    WriteLog('    [Debug] CFG file: ' + Config, DEBUG);
+
+    ModFolders.DelimitedText := StringReplace(ReadCFG(Config, 'Loader', 'ModFolders', ''), ', ', ',',[rfReplaceAll]);
 
     WriteLog('    [Debug] ' + IntToStr(ModFolders.Count) + ' mod directories listed in config.', DEBUG);
     WriteLog('    [Debug] Mod directory list in CFG: ' + ModFolders.DelimitedText, DEBUG);
