@@ -352,8 +352,9 @@ end;
 procedure LibLoader.Execute;
 var
   ModFile, ModFolder: String;
-  ModFolders, FailedFiles, FilesToProcess, FilesToRemove: TStringList;
+  ModFolders, FailedFiles, FilesToProcess, FilesToRemove, FilesLoaded: TStringList;
   FileLoaded: Boolean;
+
   // Nested procedure to load a specific file from a given folder.
   procedure LoadFileFromFolder(const Folder: String; const FileName: String; out Loaded: Boolean);
   var
@@ -380,47 +381,58 @@ var
       Log.Add('File ' + FileName + ' not found in ' + Folder, DEBUG, '', 4);
     end;
   end;
+
 begin
   Log.Add('Lib-Loader will recursively search for specified files in listed mod directories and sub dirs...', Plain, '', 4);
+
   ModFolders := TStringList.Create();  // Create a TStringList for mod folders.
   FailedFiles := TStringList.Create();  // Create a TStringList for failed files.
   FilesToProcess := TStringList.Create();  // Create a TStringList for files to process.
   FilesToRemove := TStringList.Create();  // Create a TStringList for files to remove.
+  FilesLoaded := TStringList.Create();  // Create a TStringList for files loaded successfully.
   try
     ModFolders.Delimiter := ',';  // Set the delimiter for mod folders.
     ModFolders.StrictDelimiter := TRUE;  // Use strict delimiter to handle paths with spaces.
     Files2Load.Delimiter := ',';  // Set the delimiter for files to load.
     Files2Load.StrictDelimiter := TRUE;  // Use strict delimiter to handle filenames with spaces.
+
     Log.Add('CFG file: ' + Config, DEBUG, '', 4);
     // Read and parse mod folders from the config file.
     ModFolders.DelimitedText := StringReplace(ReadCFG(Config, 'Loader', 'ModFolders', ''), ', ', ',', [rfReplaceAll]);
     Log.Add(IntToStr(ModFolders.Count) + ' mod directories listed in config.', DEBUG, '', 4);
     Log.Add('Mod directory list in CFG: ' + ModFolders.DelimitedText, DEBUG, '', 4);
+
     // Read and parse files to load from the config file.
     Files2Load.DelimitedText := StringReplace(ReadCFG(Config, 'Loader', 'Files', ''), ', ', ',', [rfReplaceAll]);
     Log.Add('CFG -> Files2Load list: ' + Files2Load.DelimitedText, DEBUG, '', 4);
     FilesToProcess.Assign(Files2Load);  // Make a copy of the files to load list.
+
     if FilesToProcess.Count > 0 then  // If there are mod folders specified.
     begin
       Log.LB;
       Log.Header('Searching specified directories and sub dirs', 4);
       Log.HR('-', 0, 4);
+
       for ModFile in FilesToProcess do
       begin
         FileLoaded := False;
+
         // Iterate through each mod folder to search for the current file.
         for ModFolder in ModFolders do
         begin
           Log.Add('Search Folder: ' + ModFolder, DEBUG, '', 4);
           LoadFileFromFolder(ModFolder, ModFile, FileLoaded);  // Load the current file from the current mod folder.
+
           // If the file was loaded, add to FilesToRemove and exit the folder loop.
           if FileLoaded then
           begin
             FilesToRemove.Add(ModFile);
-            FilesLoaded.Add(ModFile);  // Track the successfully loaded file.
+            if FilesLoaded.IndexOf(ModFile) = -1 then  // Prevent duplicates
+              FilesLoaded.Add(ModFile);  // Track the successfully loaded file.
             Break;
           end;
         end;
+
         // If the file was not found in any folder, add to FailedFiles and log an appropriate message.
         if not FileLoaded then
         begin
@@ -431,6 +443,7 @@ begin
           end;
         end;
       end;
+
       // Remove the files from Files2Load that were successfully loaded.
       for ModFile in FilesToRemove do
       begin
@@ -443,26 +456,33 @@ begin
       ModFolder := GetCurrentDir;  // Default to the current directory if no mod folders are specified.
       Log.Add('Mod Folder(s): None specified, defaulting to application/client dir.', Plain, '', 4);
     end;
+
     Log.Add('Recursive directory search completed.', Custom, 'LoadLib', 4);
+
     if Files2Load.Count > 0 then  // If there are still files to load, search in the application/client directory.
     begin
       Log.LB;
       Log.Header('Search in application/client dir', 4);
       Log.HR('-', 0, 4);
+
       ModFolder := GetCurrentDir;  // Get the current directory.
       Log.Add('Application/Client Folder: ' + ModFolder, Plain, '', 4);
       Log.Add('Lib-Loader will recursively search for specified files in ' + ModFolder + ' and sub dirs...', Plain, '', 4);
       Log.Add('Search folder: ' + ModFolder, DEBUG, '', 4);
+
       FilesToRemove.Clear;  // Clear the list of files to remove for the new directory search.
+
       for ModFile in Files2Load do
       begin
         FileLoaded := False;
         LoadFileFromFolder(ModFolder, ModFile, FileLoaded);  // Load the current file from the application/client directory.
+
         // If the file was loaded, add to FilesToRemove and remove from FailedFiles if present.
         if FileLoaded then
         begin
           FilesToRemove.Add(ModFile);
-          FilesLoaded.Add(ModFile);  // Track the successfully loaded file.
+          if FilesLoaded.IndexOf(ModFile) = -1 then  // Prevent duplicates
+            FilesLoaded.Add(ModFile);  // Track the successfully loaded file.
           if FailedFiles.IndexOf(ModFile) <> -1 then
             FailedFiles.Delete(FailedFiles.IndexOf(ModFile));
         end
@@ -473,9 +493,11 @@ begin
           begin
             FailedFiles.Add(ModFile);
           end;
+
           Log.Add('File ' + ModFile + ' not found in the application/client directory.', ERROR, '', 4);
         end;
       end;
+
       // Remove the files from Files2Load that were successfully loaded.
       for ModFile in FilesToRemove do
       begin
@@ -483,12 +505,14 @@ begin
           Files2Load.Delete(Files2Load.IndexOf(ModFile));
       end;
     end;
+
     Log.LB;
     Log.HR;
     if FilesLoaded.Count > 0 then
       Log.Add('Loaded File(s) list: ' + FilesLoaded.CommaText, Plain, '', 4)
     else
       Log.Add('No files were loaded.', Plain, '', 4);
+
     // Log the status of the remaining unloaded files.
     if FailedFiles.Count > 0 then
     begin
@@ -497,6 +521,7 @@ begin
     end
     else
       Log.Add('All specified files loaded!', Plain, '', 4);
+
     Log.Add('Operation completed.', Plain, '', 4);
   finally
     ModFolders.Free;  // Free the TStringList for mod folders.
