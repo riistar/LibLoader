@@ -204,13 +204,11 @@ end;
 // ========================================================================================================================
 // Recursive file search, returning location if found.
 function LibLoader.WhereIs(path: string; const filename: string): string;
-
   // Helper function to check if a TSearchRec is a directory.
   function IsDirectory(const tsr: TSearchRec): Boolean;
   begin
     Result := (tsr.Attr and faDirectory) = faDirectory;
   end;
-
   // Recursive procedure to search for the file within the given path.
   function RecursiveWhereIs(const searchPath: string; const targetFile: string): string;
   var
@@ -219,7 +217,6 @@ function LibLoader.WhereIs(path: string; const filename: string): string;
   begin
     Result := '';  // Initialize the result to an empty string.
     currentPath := IncludeTrailingPathDelimiter(searchPath);  // Ensure the path ends with a directory separator.
-
     // Find the first file/directory in the given path.
     if FindFirst(currentPath + '*.*', faDirectory, searchRec) = 0 then
     begin
@@ -245,7 +242,6 @@ function LibLoader.WhereIs(path: string; const filename: string): string;
       end;
     end;
   end;
-
 begin
   Result := RecursiveWhereIs(path, filename);  // Start the recursive search and return the result.
 end;
@@ -293,7 +289,6 @@ var
   h: HMODULE;
   Index: Integer;
   ModFile: String;
-
   function IsDllCompatibleWithHost(const FileName: string): Boolean;
   begin
     // Check if the DLL is compatible with the host architecture
@@ -302,7 +297,6 @@ var
     else
       Result := TRUE; // For x86 host, assume compatibility
   end;
-
 begin
   // Check if the DLL is compatible with the host architecture
   if not IsDllCompatibleWithHost(dllname) then
@@ -310,11 +304,9 @@ begin
     Log.Add('LoadLib failed, ' + dllname + ' is not compatible with the host architecture.', ERROR, '', 4);
     Exit;
   end;
-
   // Attempt to load the DLL
   h := LoadLibrary(dllname);
   ModFile := ExtractFileName(dllname);
-
   if h = 0 then
   begin
     // Handle the case when loading the DLL fails
@@ -333,13 +325,11 @@ begin
         FilesLoaded.Add(ModFile);
         Log.Add('Added ' + ModFile + ' to Files Loaded list', DEBUG, '', 6);
       end;
-
       Index := Files2Load.IndexOf(ModFile);
       if Index <> -1 then
       begin
         Log.Add('Removing: ' + ModFile, DEBUG, '', 6);
         Files2Load.Delete(Index);
-
         // Only log Files2Load.CommaText if Files2Load is not empty
         if Files2Load.Count > 0 then
           Log.Add('Amended Files2Load List: ' + Files2Load.CommaText, DEBUG, '', 6)
@@ -364,7 +354,6 @@ var
   ModFile, ModFolder: String;
   ModFolders, FailedFiles, FilesToProcess, FilesToRemove: TStringList;
   FileLoaded: Boolean;
-
   // Nested procedure to load a specific file from a given folder.
   procedure LoadFileFromFolder(const Folder: String; const FileName: String; out Loaded: Boolean);
   var
@@ -391,48 +380,39 @@ var
       Log.Add('File ' + FileName + ' not found in ' + Folder, DEBUG, '', 4);
     end;
   end;
-
 begin
   Log.Add('Lib-Loader will recursively search for specified files in listed mod directories and sub dirs...', Plain, '', 4);
-
   ModFolders := TStringList.Create();  // Create a TStringList for mod folders.
   FailedFiles := TStringList.Create();  // Create a TStringList for failed files.
   FilesToProcess := TStringList.Create();  // Create a TStringList for files to process.
   FilesToRemove := TStringList.Create();  // Create a TStringList for files to remove.
-
   try
     ModFolders.Delimiter := ',';  // Set the delimiter for mod folders.
     ModFolders.StrictDelimiter := TRUE;  // Use strict delimiter to handle paths with spaces.
     Files2Load.Delimiter := ',';  // Set the delimiter for files to load.
     Files2Load.StrictDelimiter := TRUE;  // Use strict delimiter to handle filenames with spaces.
-
     Log.Add('CFG file: ' + Config, DEBUG, '', 4);
     // Read and parse mod folders from the config file.
     ModFolders.DelimitedText := StringReplace(ReadCFG(Config, 'Loader', 'ModFolders', ''), ', ', ',', [rfReplaceAll]);
     Log.Add(IntToStr(ModFolders.Count) + ' mod directories listed in config.', DEBUG, '', 4);
     Log.Add('Mod directory list in CFG: ' + ModFolders.DelimitedText, DEBUG, '', 4);
-
     // Read and parse files to load from the config file.
     Files2Load.DelimitedText := StringReplace(ReadCFG(Config, 'Loader', 'Files', ''), ', ', ',', [rfReplaceAll]);
     Log.Add('CFG -> Files2Load list: ' + Files2Load.DelimitedText, DEBUG, '', 4);
     FilesToProcess.Assign(Files2Load);  // Make a copy of the files to load list.
-
     if FilesToProcess.Count > 0 then  // If there are mod folders specified.
     begin
       Log.LB;
       Log.Header('Searching specified directories and sub dirs', 4);
       Log.HR('-', 0, 4);
-
       for ModFile in FilesToProcess do
       begin
         FileLoaded := False;
-
         // Iterate through each mod folder to search for the current file.
         for ModFolder in ModFolders do
         begin
           Log.Add('Search Folder: ' + ModFolder, DEBUG, '', 4);
           LoadFileFromFolder(ModFolder, ModFile, FileLoaded);  // Load the current file from the current mod folder.
-
           // If the file was loaded, add to FilesToRemove and exit the folder loop.
           if FileLoaded then
           begin
@@ -441,7 +421,6 @@ begin
             Break;
           end;
         end;
-
         // If the file was not found in any folder, add to FailedFiles and log an appropriate message.
         if not FileLoaded then
         begin
@@ -452,7 +431,6 @@ begin
           end;
         end;
       end;
-
       // Remove the files from Files2Load that were successfully loaded.
       for ModFile in FilesToRemove do
       begin
@@ -465,27 +443,21 @@ begin
       ModFolder := GetCurrentDir;  // Default to the current directory if no mod folders are specified.
       Log.Add('Mod Folder(s): None specified, defaulting to application/client dir.', Plain, '', 4);
     end;
-
     Log.Add('Recursive directory search completed.', Custom, 'LoadLib', 4);
-
     if Files2Load.Count > 0 then  // If there are still files to load, search in the application/client directory.
     begin
       Log.LB;
       Log.Header('Search in application/client dir', 4);
       Log.HR('-', 0, 4);
-
       ModFolder := GetCurrentDir;  // Get the current directory.
       Log.Add('Application/Client Folder: ' + ModFolder, Plain, '', 4);
       Log.Add('Lib-Loader will recursively search for specified files in ' + ModFolder + ' and sub dirs...', Plain, '', 4);
       Log.Add('Search folder: ' + ModFolder, DEBUG, '', 4);
-
       FilesToRemove.Clear;  // Clear the list of files to remove for the new directory search.
-
       for ModFile in Files2Load do
       begin
         FileLoaded := False;
         LoadFileFromFolder(ModFolder, ModFile, FileLoaded);  // Load the current file from the application/client directory.
-
         // If the file was loaded, add to FilesToRemove and remove from FailedFiles if present.
         if FileLoaded then
         begin
@@ -501,11 +473,9 @@ begin
           begin
             FailedFiles.Add(ModFile);
           end;
-
           Log.Add('File ' + ModFile + ' not found in the application/client directory.', ERROR, '', 4);
         end;
       end;
-
       // Remove the files from Files2Load that were successfully loaded.
       for ModFile in FilesToRemove do
       begin
@@ -513,14 +483,12 @@ begin
           Files2Load.Delete(Files2Load.IndexOf(ModFile));
       end;
     end;
-
     Log.LB;
     Log.HR;
     if FilesLoaded.Count > 0 then
       Log.Add('Loaded File(s) list: ' + FilesLoaded.CommaText, Plain, '', 4)
     else
       Log.Add('No files were loaded.', Plain, '', 4);
-
     // Log the status of the remaining unloaded files.
     if FailedFiles.Count > 0 then
     begin
@@ -529,7 +497,6 @@ begin
     end
     else
       Log.Add('All specified files loaded!', Plain, '', 4);
-
     Log.Add('Operation completed.', Plain, '', 4);
   finally
     ModFolders.Free;  // Free the TStringList for mod folders.

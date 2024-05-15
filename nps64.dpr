@@ -3,7 +3,8 @@ library nps64;
 uses
   Windows,
   System.AnsiStrings,
-  Core_LibLoader in 'Core\Core_LibLoader.pas';
+  Core_LibLoader in 'Core\Core_LibLoader.pas',
+  Core_Log in 'Core\Core_Log.pas';
 
 type
   TOrgFuncs = record
