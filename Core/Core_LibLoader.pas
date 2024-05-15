@@ -246,42 +246,6 @@ begin
   Result := RecursiveWhereIs(path, filename);  // Start the recursive search and return the result.
 end;
 
-
-{
-// ========================================================================================================================
-// Recursive file search, returning location if found.
-function LibLoader.WhereIs(path: string; const filename: string): string;
-
-  function IsDirectory(const tsr: TSearchRec): Boolean;
-  begin
-    Result := (tsr.Attr and faDirectory) = faDirectory;
-  end;
-
-  procedure RecursiveWhereIs(path: string; filename: string);
-  var
-    tsr: TSearchRec;
-  begin
-    path := IncludeTrailingPathDelimiter(path);
-    if FindFirst(path + '*.*', faDirectory, tsr) = 0 then
-    begin
-      repeat
-        if AnsiCompareText(tsr.Name, filename) = 0 then
-          Result := path
-        else if IsDirectory(tsr) and (tsr.Name[1] <> '.') then
-          RecursiveWhereIs(path + tsr.Name, filename);
-        if Result <> '' then
-          Exit;
-      until FindNext(tsr) <> 0;
-      FindClose(tsr);
-    end;
-  end;
-
-begin
-  Result := '';
-  RecursiveWhereIs(path, filename);
-end;
-}
-
 // ========================================================================================================================
 // Load DLL libs
 procedure LibLoader.LoadLib(dllname: PWideChar);
