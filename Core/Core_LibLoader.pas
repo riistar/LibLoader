@@ -496,8 +496,6 @@ begin
   end;
 end;
 
-
-
 // ========================================================================================================================
 // All code below is excuted when this module is loaded according to compile order
 var
