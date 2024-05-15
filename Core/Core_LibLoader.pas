@@ -12,7 +12,6 @@ uses Windows, SysUtils, Classes, inifiles, Variants, Core_Log;
 type
   // Define the new class instance
   LibLoader = Class
-
     // These variables and methods are not visible outside this class
   private
 
@@ -45,7 +44,6 @@ const
 var
   DEBUGMSG: Boolean = TRUE;
   Success: Boolean = FALSE;
-  //Files2Load, FilesLoaded: TStringList;
   Config: String;
   Log: TLog;
 
