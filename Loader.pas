@@ -188,28 +188,35 @@ begin
       // Loop through each search directory
       for Directory in SearchDirectories do
       begin
-        Log.Add('Searching in directory: ' + Directory, DEBUG, '', 12);
-
-        // Get all files matching the module name in the directory and its subdirectories
-        FoundFiles := TDirectory.GetFiles(Directory, ModuleName, TSearchOption.soAllDirectories);
-
-        // If files are found, add them to the list and check their versions
-        if Length(FoundFiles) > 0 then
+        if DirectoryExists(Directory) then
         begin
-          FoundFilesList.AddStrings(FoundFiles);
+          Log.Add('Searching in directory: ' + Directory, DEBUG, '', 12);
 
-          // Loop through each found file to determine the newest version
-          for var FilePath in FoundFiles do
+          // Get all files matching the module name in the directory and its subdirectories
+          FoundFiles := TDirectory.GetFiles(Directory, ModuleName, TSearchOption.soAllDirectories);
+
+          // If files are found, add them to the list and check their versions
+          if Length(FoundFiles) > 0 then
           begin
-            CurrentVersion := GetVersion(FilePath);
+            FoundFilesList.AddStrings(FoundFiles);
 
-            // If the current file's version is newer, update the best version and file
-            if CompareStr(CurrentVersion, BestVersion) > 0 then
+            // Loop through each found file to determine the newest version
+            for var FilePath in FoundFiles do
             begin
-              BestVersion := CurrentVersion;
-              BestFile := FilePath;
+              CurrentVersion := GetVersion(FilePath);
+
+              // If the current file's version is newer, update the best version and file
+              if CompareStr(CurrentVersion, BestVersion) > 0 then
+              begin
+                BestVersion := CurrentVersion;
+                BestFile := FilePath;
+              end;
             end;
           end;
+        end
+        else
+        begin
+          Log.Add('Directory does not exist: ' + Directory, ERROR, '', 12);
         end;
       end;
 
@@ -231,7 +238,6 @@ begin
       // If not already searching the application directory, attempt to search there
       if not SearchAppDir then
       begin
-        BestFile := IncludeTrailingPathDelimiter(HostAppDirectory) + ModuleName;
         Log.Add('Module not found in specified directories, falling back to application directory.', DEBUG, '', 12);
 
         // Recursively call FindModule to search in the application directory
@@ -267,6 +273,7 @@ begin
   // Return the path of the best file found
   Result := BestFile;
 end;
+
 
 function TLoader.LoadModule(const ModulePath: string): Boolean;
 var
