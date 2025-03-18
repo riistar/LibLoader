@@ -3,34 +3,66 @@ unit Loader;
 interface
 
 uses
-  System.SysUtils, System.Classes, System.IniFiles, System.IOUtils, System.Types, System.Variants, Winapi.Windows,
-  System.Generics.Collections, Log;
+  System.SysUtils, System.Classes, System.IniFiles, System.IOUtils, System.Types,
+  System.Variants, Winapi.Windows, System.Generics.Collections, System.DateUtils,
+  Log, Utils, tlhelp32, Winapi.PsAPI, Injector, SyncObjs,
+  LoaderManager;     // Contains TChainLoader
 
 type
+  // TLoader is responsible for loading modules (DLLs) according to a configuration file.
+  // It supports both immediate and delayed loading, module version selection, and logging.
   TLoader = class
   private
-    ConfigPath: string; // Path to the configuration file
-    SearchDirectories: TArray<string>; // Directories to search for modules
-    ModulesToLoad: TArray<string>; // List of module names to load
-    LoadedModules: TStringList; // List of successfully loaded modules
-    FailedModules: TStringList; // List of modules that failed to load
-    LoadedModuleHandles: TDictionary<string, HMODULE>; // Dictionary to store module handles
-    MaxRetries: Integer; // Maximum number of retries for loading a module
-    HostAppDirectory: string; // Directory of the host application
-
-    procedure LoadConfig(const ConfigPath: string); // Load configuration from file
-    function FindModule(const ModuleName: string; SearchAppDir: Boolean = False): string; // Find the module in specified directories
-    function LoadModule(const ModulePath: string): Boolean; // Load the module
-    function IsCompatible(const ModulePath: string): Boolean; // Check if the module is compatible with the host architecture
-    function GetVersion(const DLLPath: string): string; // Get the version of the module
-    function GetHostAppDirectory: string; // Get the directory of the host application
-    function IsHostX64: Boolean; // Check if the host application is 64-bit
-    function IsDllX64(const FileName: string): Boolean; // Check if the DLL is 64-bit
+    // Counters for delayed tasks and synchronization objects.
+    DelayedTasksCompleted: Integer;
+    DelayedTasksTotal: Integer;
+    TaskLock: TObject;
+    FDelayedTaskEvent: TEvent;
+    // Configuration file path and search directories.
+    FConfigPath: string;
+    SearchDirectories: TArray<string>;
+    ModulesToLoad: TArray<string>;
+    // Collections for loaded and failed modules, plus a dictionary for module handles.
+    LoadedModules: TStringList;
+    FailedModules: TStringList;
+    LoadedModuleHandles: TDictionary<string, HMODULE>;
+    MaxRetries: Integer;
+    HostAppDirectory: string;
+    TerminateFlag: Boolean;
+    FLog: TLog;  // Internal logging instance.
+    // Cache for directory files to speed up searches.
+    FDirectoryCache: TDictionary<string, TStringDynArray>;
+    // Helper methods.
+    procedure SignalDelayedTaskCompleted;
+    procedure UpdateBestCandidate(const AFile: string; var BestVersion, BestFile: string;
+      var BestFileDate: TDateTime; const Lock: TObject);
   public
-    constructor Create; // Constructor
-    destructor Destroy; override; // Destructor
-    procedure Execute; // Execute the loading process
-    function ReadCFG(const filename: string; const Section, Key: string; const DefaultValue: Variant): Variant; // Read configuration values
+    constructor Create;
+    destructor Destroy; override;
+    procedure Execute;
+    function ReadCFG(const filename, Section, Key: string; const DefaultValue: Variant): Variant;
+    procedure LoadConfig(const ConfigPath: string);
+    function LoadModule(const ModulePath: string): Boolean;
+    procedure StartDelayedTask(const ModuleName, WaitForModule, WaitForProcess: string; Delay: Integer);
+    function FindModule(const ModuleName: string; SearchAppDir: Boolean = False): string;
+    function IsCompatible(const ModulePath: string): Boolean;
+    function GetVersion(const DLLPath: string): string;
+    function GetFileDate(const FileName: string): TDateTime;
+    function GetHostAppDirectory: string;
+    function IsHostX64: Boolean;
+    function IsDllX64(const FileName: string): Boolean;
+    function FindProcessByName(const ProcessName: string): Integer;
+    function ModuleExistsInHost(const ModuleName: string): Boolean;
+  end;
+
+type
+  // Record type for delayed task parameters.
+  TDelayedTaskParams = record
+    DelayMS: Cardinal;
+    ModuleName: string;
+    ProcessName: string;
+    TaskMethod: string;
+    DLLPath: string;
   end;
 
 const
@@ -39,74 +71,239 @@ const
   CONFIG_FILENAME = 'Loader.cfg';
 
 var
-  DEBUGMSG: Boolean = TRUE; // Global debug message flag
-  Success: Boolean = FALSE; // Global success flag
-  Config: String; // Global configuration path
-  LibLoader: TLoader; // Global instance of the loader
-  Log: TLog; // Global log instance
+  LibLoader: TLoader;
+  ChainLoader: TChainLoader;
 
 implementation
 
-{ TLoader }
+uses
+  System.Threading; // For TTask and TParallel
 
+// --------------------------
+// TLoader Implementation
+// --------------------------
+
+// Constructor: Initializes the loader, sets up the logging, configuration, and internal collections.
 constructor TLoader.Create;
 var
   DLLmodule: array[0..MAX_PATH] of Char;
   CfgFile: TIniFile;
 begin
-  // Get the module file name of the current DLL
+  TaskLock := TObject.Create;
+  DelayedTasksCompleted := 0;
+  DelayedTasksTotal := 0;
+  FDelayedTaskEvent := TEvent.Create(nil, True, False, '');
+  FDirectoryCache := TDictionary<string, TStringDynArray>.Create;
+  // Determine the configuration file location based on the module path.
   GetModuleFileName(hInstance, DLLmodule, Length(DLLmodule));
-  // Set the configuration path globally
-  Config := ExtractFilePath(DLLmodule) + CONFIG_FILENAME;
-  // Get the host application directory
+  FConfigPath := ExtractFilePath(DLLmodule) + CONFIG_FILENAME;
   HostAppDirectory := GetHostAppDirectory;
-
-  // Open the configuration file
-  CfgFile := TIniFile.Create(Config);
+  TerminateFlag := False;
+  CfgFile := TIniFile.Create(FConfigPath);
   try
-    // Initialize the log with settings from the configuration file
-    Log := TLog.Create(LOG_FILENAME, 80, CfgFile.ReadBool('LOG', 'Append', FALSE));
-    LoadedModules := TStringList.Create;
-    FailedModules := TStringList.Create;
-    LoadedModuleHandles := TDictionary<string, HMODULE>.Create;
-    MaxRetries := 3;
-
-    // Log initialization details
-    Log.Header(MODULE_NAME);
-    Log.HR('=');
-    Log.Add('Initializing...', PLAIN, '', 4);
-    Log.Add('Module: ' + ExtractFileName(DLLmodule), PLAIN, '', 4);
-    Log.Add('Version: ' + GetVersion(DLLmodule), PLAIN, '', 4);
-    Log.Add('Config File: ' + Config, PLAIN, '', 4);
-
-    // Read debug settings from the configuration file
-    DEBUGMSG := CfgFile.ReadBool('DEBUG', 'Enabled', FALSE);
-    Log.DebugEnabled := DEBUGMSG;
-    Log.Add('DEBUG Output: ' + BoolToStr(DEBUGMSG, True), PLAIN, '', 4);
-  finally
-    CfgFile.Free;
+    try
+      // Create the log object and write the header messages.
+      FLog := TLog.Create(LOG_FILENAME, 80, CfgFile.ReadBool('LOG', 'Append', False),
+        CfgFile.ReadInteger('Debug', 'Mode', 1));
+      FLog.Header(MODULE_NAME);
+      FLog.HR('=');
+      FLog.Add('Initializing...', PLAIN, '', 4);
+      FLog.Add('Module: ' + ExtractFileName(DLLmodule), PLAIN, '', 4);
+      FLog.Add('Version: ' + GetVersion(DLLmodule), PLAIN, '', 4);
+      FLog.Add('Config File: ' + FConfigPath, PLAIN, '', 4);
+      FLog.DebugEnabled := CfgFile.ReadBool('DEBUG', 'Enabled', False);
+      FLog.Add('DEBUG Output: ' + BoolToStr(FLog.DebugEnabled, True), PLAIN, '', 4);
+    finally
+      CfgFile.Free;
+    end;
+  except
+    on E: Exception do
+      FLog.Add('Error during initialization: ' + E.Message, ERROR, '', 4);
   end;
+  // Initialize module collections.
+  LoadedModules := TStringList.Create;
+  FailedModules := TStringList.Create;
+  LoadedModuleHandles := TDictionary<string, HMODULE>.Create;
+  MaxRetries := 3;
 end;
 
+// Destructor: Frees all allocated objects.
 destructor TLoader.Destroy;
 begin
-  // Free resources
+  FDirectoryCache.Free;
+  FDelayedTaskEvent.Free;
+  TaskLock.Free;
   LoadedModules.Free;
   FailedModules.Free;
   LoadedModuleHandles.Free;
-  Log.Free;
+  FLog.Free;
   inherited;
 end;
 
+// Returns the directory of the host application.
 function TLoader.GetHostAppDirectory: string;
 var
   HostAppModule: array[0..MAX_PATH] of Char;
 begin
-  // Get the module file name of the host application
   GetModuleFileName(0, HostAppModule, Length(HostAppModule));
   Result := ExtractFilePath(HostAppModule);
 end;
 
+// Checks if a module (DLL) is already loaded in the host process.
+function TLoader.ModuleExistsInHost(const ModuleName: string): Boolean;
+var
+  ModuleHandles: array[0..1023] of HMODULE;
+  ModuleCount: DWORD;
+  ModuleBaseName: array[0..MAX_PATH] of Char;
+  i: Integer;
+begin
+  Result := False;
+  if EnumProcessModules(GetCurrentProcess, @ModuleHandles, SizeOf(ModuleHandles), ModuleCount) then
+  begin
+    ModuleCount := ModuleCount div SizeOf(HMODULE);
+    for i := 0 to ModuleCount - 1 do
+      if (GetModuleBaseName(GetCurrentProcess, ModuleHandles[i], ModuleBaseName, SizeOf(ModuleBaseName)) > 0)
+         and SameText(ModuleBaseName, ModuleName) then
+      begin
+        Result := True;
+        Break;
+      end;
+  end;
+end;
+
+// Attempts to load a module from the specified path.
+// Logs success or failure along with timing information.
+function TLoader.LoadModule(const ModulePath: string): Boolean;
+var
+  StartTime, EndTime: TDateTime;
+  ModuleHandle: HMODULE;
+begin
+  StartTime := Now;
+  Result := False;
+  // Log attempt to load module.
+  FLog.Add(Format('Attempting to load module...', [ModulePath]), DEBUG, '', 4);
+  // Check if file exists.
+  if not FileExists(ModulePath) then
+  begin
+    FLog.Add(Format('File does not exist: %s', [ModulePath]), ERROR, '', 4);
+    Exit;
+  end;
+  // Check compatibility (architecture) of the module.
+  if not IsCompatible(ModulePath) then
+  begin
+    FLog.Add(Format('Module is not compatible: %s', [ModulePath]), ERROR, '', 4);
+    Exit;
+  end;
+  // Load the DLL.
+  ModuleHandle := LoadLibrary(PChar(ModulePath));
+  if ModuleHandle = 0 then
+  begin
+    FLog.Add(Format('LoadLibrary failed for: %s. Error: %s', [ModulePath, SysErrorMessage(GetLastError)]), ERROR, '', 4);
+    Exit;
+  end;
+  // Store the handle and record success.
+  LoadedModuleHandles.Add(ExtractFileName(ModulePath), ModuleHandle);
+  LoadedModules.Add(ModulePath);
+  FLog.Add(Format('Successfully loaded module: %s', [ModulePath]), PLAIN, '', 4);
+  Result := True;
+  EndTime := Now;
+  FLog.Add(Format('Time taken to load module: %s = %.2f ms', [ModulePath, MilliSecondsBetween(EndTime, StartTime)]), DEBUG, '', 4);
+end;
+
+// Searches for the module by name in the configured directories or in the host application directory.
+// Detailed logging is provided for each search step and evaluation of candidate files.
+function TLoader.FindModule(const ModuleName: string; SearchAppDir: Boolean = False): string;
+var
+  i: Integer;
+  Directory: string;
+  Files: TStringDynArray;
+  BestVersion, BestFile: string;
+  BestFileDate: TDateTime;
+  SearchStart, SearchEnd: TDateTime;  // Timer variables
+  ElapsedMs: Double;
+begin
+  SearchStart := Now;  // Start the timer
+  Result := '';
+  BestVersion := '0.0.0.0';
+  BestFileDate := 0;
+  BestFile := '';
+  FLog.Add(Format('Searching for module: %s (SearchAppDir=%s)', [ModuleName, BoolToStr(SearchAppDir, True)]), DEBUG, '', 4);
+
+  if not SearchAppDir then
+  begin
+    for i := Low(SearchDirectories) to High(SearchDirectories) do
+    begin
+      Directory := SearchDirectories[i].Trim;
+      if not DirectoryExists(Directory) then
+      begin
+        FLog.Add('Directory does not exist: ' + Directory, ERROR, '', 12);
+        Continue;
+      end;
+      if not IsDirectoryAccessible(Directory) then
+      begin
+        FLog.Add('Directory not accessible: ' + Directory, ERROR, '', 12);
+        Continue;
+      end;
+      FLog.Add('Searching in directory: ' + Directory, DEBUG, '', 12);
+      try
+        Files := TDirectory.GetFiles(Directory, ModuleName, TSearchOption.soAllDirectories);
+      except
+        on E: Exception do
+        begin
+          FLog.Add('Error retrieving files from directory: ' + Directory + '. ' + E.Message, ERROR, '', 12);
+          Continue;
+        end;
+      end;
+      if Length(Files) > 0 then
+      begin
+        for var AFile in Files do
+          UpdateBestCandidate(AFile, BestVersion, BestFile, BestFileDate, TaskLock);
+        if BestFile <> '' then
+        begin
+          FLog.Add('Best match found: ' + BestFile, DEBUG, '', 12);
+          Break;
+        end;
+      end;
+    end;
+    if BestFile = '' then
+    begin
+      FLog.Add('Module not found in specified directories, falling back to application directory.', DEBUG, '', 12);
+      Result := IncludeTrailingPathDelimiter(HostAppDirectory) + ModuleName;
+      if FileExists(Result) then
+        FLog.Add('Module found in application directory: ' + Result, DEBUG, '', 12)
+      else
+      begin
+        FLog.Add('File ' + ModuleName + ' not found in the application/client directory.', ERROR, '', 4);
+        Result := '';
+      end;
+    end
+    else
+      Result := BestFile;
+  end
+  else
+  begin
+    Result := IncludeTrailingPathDelimiter(HostAppDirectory) + ModuleName;
+    if FileExists(Result) then
+      FLog.Add('Module found in application directory: ' + Result, DEBUG, '', 12)
+    else
+    begin
+      FLog.Add('File ' + ModuleName + ' not found in the application/client directory.', ERROR, '', 4);
+      Result := '';
+    end;
+  end;
+  // End the timer and log the elapsed time.
+  SearchEnd := Now;
+  ElapsedMs := MilliSecondsBetween(SearchEnd, SearchStart);
+  FLog.Add(Format('Time taken to find module %s: %.2f ms', [ModuleName, ElapsedMs]), DEBUG, '', 4);
+  if Result <> '' then
+    FLog.Add(Format('Module Path: %s', [Result]), DEBUG, '', 4)
+  else
+    FLog.Add(Format('Module not found: %s', [ModuleName]), ERROR, '', 4);
+end;
+
+
+
+// Retrieves the version string of the given DLL using Windows version APIs.
 function TLoader.GetVersion(const DLLPath: string): string;
 var
   Size: DWORD;
@@ -116,452 +313,508 @@ var
   VerInfoSize: UINT;
 begin
   Result := '';
-  // Get the size of the version information
   Size := GetFileVersionInfoSize(PChar(DLLPath), Handle);
   if Size = 0 then Exit;
-
-  // Allocate memory for the version information
   GetMem(Buffer, Size);
   try
-    // Get the version information
-    if GetFileVersionInfo(PChar(DLLPath), 0, Size, Buffer) then
-    begin
-      // Retrieve the fixed file info
-      if VerQueryValue(Buffer, '\', Pointer(VerInfo), VerInfoSize) then
-      begin
-        // Format the version string
-        Result := Format('%d.%d.%d.%d', [
-          HiWord(VerInfo^.dwFileVersionMS), LoWord(VerInfo^.dwFileVersionMS),
-          HiWord(VerInfo^.dwFileVersionLS), LoWord(VerInfo^.dwFileVersionLS)]);
-      end;
+    try
+      if GetFileVersionInfo(PChar(DLLPath), 0, Size, Buffer) then
+        if VerQueryValue(Buffer, '\', Pointer(VerInfo), VerInfoSize) then
+          Result := Format('%d.%d.%d.%d', [HiWord(VerInfo^.dwFileVersionMS),
+            LoWord(VerInfo^.dwFileVersionMS), HiWord(VerInfo^.dwFileVersionLS),
+            LoWord(VerInfo^.dwFileVersionLS)]);
+    finally
+      FreeMem(Buffer);
     end;
-  finally
-    FreeMem(Buffer);
+  except
+    on E: Exception do
+      FLog.Add('Error reading version from ' + DLLPath + ': ' + E.Message, ERROR, '', 4);
   end;
 end;
 
+// Retrieves the file date (last write time) of a file.
+function TLoader.GetFileDate(const FileName: string): TDateTime;
+var
+  FileAttributes: TWin32FileAttributeData;
+  FileTime: TFileTime;
+  SystemTime: TSystemTime;
+begin
+  Result := 0;
+  if GetFileAttributesEx(PChar(FileName), GetFileExInfoStandard, @FileAttributes) and
+     FileTimeToSystemTime(FileAttributes.ftLastWriteTime, SystemTime) then
+    Result := SystemTimeToDateTime(SystemTime);
+end;
+
+// Loads the configuration file, sets up search directories, modules to load, and delayed tasks.
 procedure TLoader.LoadConfig(const ConfigPath: string);
 var
   Ini: TIniFile;
+  Sections, DelayedModules, RegularModules: TStringList;
+  SectionName, WaitForModule, WaitForProcess, DelayedModuleFile: string;
+  DelayValue: Integer;
+  i: Integer;
 begin
-  // Open the configuration file
   Ini := TIniFile.Create(ConfigPath);
+  Sections := TStringList.Create;
+  DelayedModules := TStringList.Create;
+  RegularModules := TStringList.Create;
   try
-    // Read directories and files to load from the configuration file
-    SearchDirectories := Ini.ReadString('Loader', 'ModFolders', '').Split([',']);
-    for var i := 0 to Length(SearchDirectories) - 1 do
-      SearchDirectories[i] := SearchDirectories[i].Trim;
-
-    ModulesToLoad := Ini.ReadString('Loader', 'Files', '').Split([',']);
-    for var i := 0 to Length(ModulesToLoad) - 1 do
-      ModulesToLoad[i] := ModulesToLoad[i].Trim;
-
-    // Log configuration details
-    Log.Add('CFG file: ' + ConfigPath, DEBUG, '', 4);
-    Log.Add(IntToStr(Length(SearchDirectories)) + ' mod directories listed in config.', DEBUG, '', 4);
-    Log.Add('Mod directory list in CFG: ' + String.Join(',', SearchDirectories), DEBUG, '', 4);
-    Log.Add('CFG -> Files2Load list: ' + String.Join(',', ModulesToLoad), DEBUG, '', 4);
-  finally
-    Ini.Free;
+    try
+      // Read search directories and module file names.
+      SearchDirectories := Ini.ReadString('Loader', 'ModFolders', '').Split([',']);
+      for i := 0 to High(SearchDirectories) do
+        SearchDirectories[i] := SearchDirectories[i].Trim;
+      RegularModules.AddStrings(Ini.ReadString('Loader', 'Files', '').Split([',']));
+      for i := 0 to RegularModules.Count - 1 do
+        RegularModules[i] := RegularModules[i].Trim;
+      // Build a directory cache to avoid repeated disk reads.
+      for i := 0 to High(SearchDirectories) do
+        if DirectoryExists(SearchDirectories[i]) and IsDirectoryAccessible(SearchDirectories[i]) then
+          FDirectoryCache.AddOrSetValue(SearchDirectories[i],
+            TDirectory.GetFiles(SearchDirectories[i], '*', TSearchOption.soAllDirectories));
+      // Read all sections in the INI file.
+      Ini.ReadSections(Sections);
+      // Process each section that isn't part of the global configuration.
+      for SectionName in Sections do
+      begin
+        if SameText(SectionName, 'Loader') or SameText(SectionName, 'Log') or SameText(SectionName, 'Debug') then
+          Continue;
+        WaitForModule := Ini.ReadString(SectionName, 'WaitForModule', '').Trim;
+        WaitForProcess := Ini.ReadString(SectionName, 'WaitForProcess', '').Trim;
+        DelayValue := Ini.ReadInteger(SectionName, 'Delay', 0);
+        // Only add delayed tasks for modules in the ModulesToLoad list.
+        if RegularModules.IndexOf(SectionName.Trim) = -1 then
+        begin
+          FLog.Add(Format('Ignoring delayed task for module: %s (Not in ModulesToLoad list)', [SectionName.Trim]), DEBUG, '', 4);
+          Continue;
+        end;
+        DelayedModules.Add(SectionName.Trim);
+        // Start the delayed task.
+        StartDelayedTask(SectionName.Trim, WaitForModule, WaitForProcess, DelayValue);
+        FLog.Add(Format('Delayed task identified: %s [WaitForModule=%s, WaitForProcess=%s, Delay=%d ms]',
+          [SectionName.Trim, WaitForModule, WaitForProcess, DelayValue]), DEBUG, '', 4);
+      end;
+      // Remove delayed modules from the regular modules list.
+      RegularModules.CaseSensitive := False;
+      for var DelayedModule in DelayedModules do
+      begin
+        DelayedModuleFile := DelayedModule.Trim;
+        for i := RegularModules.Count - 1 downto 0 do
+          if SameText(RegularModules[i].Trim, DelayedModuleFile) then
+          begin
+            RegularModules.Delete(i);
+            Break;
+          end;
+      end;
+      ModulesToLoad := RegularModules.ToStringArray;
+      // Set up the delayed task synchronization if any exist.
+      if DelayedModules.Count > 0 then
+      begin
+        TMonitor.Enter(TaskLock);
+        try
+          DelayedTasksTotal := DelayedModules.Count;
+          DelayedTasksCompleted := 0;
+          FDelayedTaskEvent.ResetEvent;
+        finally
+          TMonitor.Exit(TaskLock);
+        end;
+      end;
+      FLog.LB;
+      FLog.Add(Format('Regular Modules (%d)', [RegularModules.Count]), PLAIN, '', 4);
+      FLog.Add(Format('Delayed Modules (%d)', [DelayedModules.Count]), PLAIN, '', 4);
+      FLog.LB;
+    finally
+      Sections.Free;
+      DelayedModules.Free;
+      RegularModules.Free;
+      Ini.Free;
+    end;
+  except
+    on E: Exception do
+      FLog.Add('Error in LoadConfig: ' + E.Message, ERROR, '', 4);
   end;
 end;
 
-function TLoader.FindModule(const ModuleName: string; SearchAppDir: Boolean = False): string;
-var
-  Directory: string;
-  FoundFiles: TStringDynArray;
-  BestFile: string;
-  BestVersion, CurrentVersion: string;
-  FoundFilesList: TStringList;
+// Signals that a delayed task has been completed.
+// When all delayed tasks are finished, the event is set.
+procedure TLoader.SignalDelayedTaskCompleted;
 begin
-  // Initialize the best version to a very low value and best file to an empty string
-  BestVersion := '0.0.0.0';
-  BestFile := '';
-  FoundFilesList := TStringList.Create;
-
+  TMonitor.Enter(TaskLock);
   try
-    // If not searching the application directory, perform the recursive search
-    if not SearchAppDir then
-    begin
-      Log.Add('Recursive search for Module: ' + ModuleName, DEBUG, '', 8);
+    Inc(DelayedTasksCompleted);
+    if DelayedTasksCompleted = DelayedTasksTotal then
+      FDelayedTaskEvent.SetEvent;
+  finally
+    TMonitor.Exit(TaskLock);
+  end;
+end;
 
-      // Loop through each search directory
-      for Directory in SearchDirectories do
+// Evaluates a candidate file by reading its version and file date,
+// then compares it with the current best candidate to decide acceptance.
+procedure TLoader.UpdateBestCandidate(const AFile: string; var BestVersion, BestFile: string;
+  var BestFileDate: TDateTime; const Lock: TObject);
+var
+  CurrentVersion: string;
+  CurrentFileDate: TDateTime;
+begin
+  try
+    CurrentVersion := GetVersion(AFile);
+    CurrentFileDate := GetFileDate(AFile);
+    if CurrentFileDate = 0 then
+      CurrentFileDate := Now;
+    // Log file evaluation details.
+    FLog.Add(Format('Evaluating file: %s [Version: %s, Date: %s]', [AFile, CurrentVersion, DateTimeToStr(CurrentFileDate)]), DEBUG, '', 16);
+    TMonitor.Enter(Lock);
+    try
+      if (CurrentVersion = '') or (CurrentVersion = '0.0.0.0') then
       begin
-        if DirectoryExists(Directory) then
+        if CurrentFileDate > BestFileDate then
         begin
-          Log.Add('Searching in directory: ' + Directory, DEBUG, '', 12);
-
-          // Get all files matching the module name in the directory and its subdirectories
-          FoundFiles := TDirectory.GetFiles(Directory, ModuleName, TSearchOption.soAllDirectories);
-
-          // If files are found, add them to the list and check their versions
-          if Length(FoundFiles) > 0 then
-          begin
-            FoundFilesList.AddStrings(FoundFiles);
-
-            // Loop through each found file to determine the newest version
-            for var FilePath in FoundFiles do
-            begin
-              CurrentVersion := GetVersion(FilePath);
-
-              // If the current file's version is newer, update the best version and file
-              if CompareStr(CurrentVersion, BestVersion) > 0 then
-              begin
-                BestVersion := CurrentVersion;
-                BestFile := FilePath;
-              end;
-            end;
-          end;
+          BestFileDate := CurrentFileDate;
+          BestFile := AFile;
+          FLog.Add(Format('Accepted based on file date: %s [Date: %s]', [AFile, DateTimeToStr(CurrentFileDate)]), DEBUG, '', 16);
         end
         else
-        begin
-          Log.Add('Directory does not exist: ' + Directory, ERROR, '', 12);
-        end;
-      end;
-
-      // If multiple versions of the module were found, log the details
-      if FoundFilesList.Count > 1 then
-      begin
-        Log.Add('Found multiple versions of module ' + ModuleName + ':', DEBUG, '', 12);
-        for var FilePath in FoundFilesList do
-        begin
-          Log.Add(FilePath, DEBUG, '', 16);
-        end;
-        Log.Add('Loading newest: ' + BestFile + ' [Version: ' + BestVersion + ']', DEBUG, '', 12);
-      end;
-    end;
-
-    // If no suitable file was found in the specified directories
-    if BestFile = '' then
-    begin
-      // If not already searching the application directory, attempt to search there
-      if not SearchAppDir then
-      begin
-        Log.Add('Module not found in specified directories, falling back to application directory.', DEBUG, '', 12);
-
-        // Recursively call FindModule to search in the application directory
-        Result := FindModule(ModuleName, True);
-        Exit;
+          FLog.Add(Format('Rejected: %s. Reason: Older file date', [AFile]), DEBUG, '', 16);
       end
       else
       begin
-        // Check if the file exists in the application directory
-        BestFile := IncludeTrailingPathDelimiter(HostAppDirectory) + ModuleName;
-        if FileExists(BestFile) then
+        if (BestVersion = '') or (BestVersion = '0.0.0.0') then
         begin
-          Log.Add('Module found in application directory: ' + BestFile, DEBUG, '', 12);
+          BestVersion := CurrentVersion;
+          BestFileDate := CurrentFileDate;
+          BestFile := AFile;
+          FLog.Add(Format('Accepted based on version: %s [Version: %s]', [AFile, CurrentVersion]), DEBUG, '', 16);
+        end
+        else if CompareVersions(CurrentVersion, BestVersion) > 0 then
+        begin
+          BestVersion := CurrentVersion;
+          BestFileDate := CurrentFileDate;
+          BestFile := AFile;
+          FLog.Add(Format('Accepted based on version: %s [Version: %s]', [AFile, CurrentVersion]), DEBUG, '', 16);
         end
         else
+          FLog.Add(Format('Rejected: %s. Reason: Lower or same version', [AFile]), DEBUG, '', 16);
+      end;
+    finally
+      TMonitor.Exit(Lock);
+    end;
+  except
+    on E: Exception do
+      FLog.Add(Format('Error evaluating file %s: %s', [AFile, E.Message]), ERROR, '', 4);
+  end;
+end;
+
+// Starts a delayed task for a module. This task may wait for a specific module or process before loading.
+procedure TLoader.StartDelayedTask(const ModuleName, WaitForModule, WaitForProcess: string; Delay: Integer);
+var
+  InjectionStatus : boolean;
+begin
+  if FConfigPath = '' then
+    raise Exception.Create('Configuration file path not specified.');
+  // Run the delayed task on a background thread.
+  TTask.Run(
+    procedure
+    var
+      ThreadID: TThreadID;
+      ModulePath: string;
+      Injector: TInjector;
+      StartTime, EndTime: TDateTime;
+      // Local procedure to perform a time delay.
+      procedure PerformTimeDelay;
+      begin
+        if Delay > 0 then
         begin
-          // Log an error if the file is not found in the application directory
-          Log.Add('File ' + ModuleName + ' not found in the application/client directory.', ERROR, '', 4);
+          FLog.Add(Format('Task [%d]: Delaying execution for %d ms', [ThreadID, Delay]), PLAIN, '', 4);
+          TThread.Sleep(Delay);
         end;
       end;
-    end
-    else
+      // Waits for a target process to appear.
+      function MonitorForProcess: Boolean;
+      begin
+        Result := True;
+        if WaitForProcess <> '' then
+        begin
+          FLog.Add(Format('Task [%d]: Monitoring for process %s', [ThreadID, WaitForProcess]), PLAIN, '', 4);
+          repeat
+            if FindProcessByName(WaitForProcess) > 0 then
+            begin
+              FLog.Add(Format('Task [%d]: Process detected: %s', [ThreadID, WaitForProcess]), PLAIN, '', 4);
+              Break;
+            end;
+            TThread.Sleep(100);
+          until TerminateFlag;
+        end;
+      end;
+      // Waits for a target module to be loaded in the host process.
+      function MonitorForModule: Boolean;
+      begin
+        Result := True;
+        if WaitForModule <> '' then
+        begin
+          FLog.Add(Format('Task [%d]: Monitoring for module %s', [ThreadID, WaitForModule]), PLAIN, '', 4);
+          repeat
+            if ModuleExistsInHost(WaitForModule) then
+            begin
+              FLog.Add(Format('Task [%d]: Module detected: %s', [ThreadID, WaitForModule]), PLAIN, '', 4);
+              Break;
+            end;
+            TThread.Sleep(100);
+          until TerminateFlag;
+        end;
+      end;
     begin
-      // Log the directory where the module was found and the module to be loaded
-      Log.Add('Module found in ' + ExtractFilePath(BestFile), DEBUG, '', 12);
-      Log.Add('Module to load: ' + BestFile, DEBUG, '', 12);
-    end;
+      StartTime := Now;
+      ThreadID := TThread.CurrentThread.ThreadID;
+      FLog.Add(Format('Task [%d]: Started for %s', [ThreadID, ModuleName]), PLAIN, '', 4);
+      try
+        // Delay execution if required.
+        PerformTimeDelay;
+        // Monitor for specified process or module.
+        if not MonitorForProcess then Exit;
+        if not MonitorForModule then Exit;
+        // Attempt to resolve the module path.
+        ModulePath := FindModule(ModuleName);
+        if ModulePath = '' then
+          FLog.Add(Format('Task [%d]: Module path not resolved: %s', [ThreadID, ModuleName]), ERROR, '', 4)
+        else
+          try
+            // Read the loading method from the configuration.
+            case TIniFile.Create(FConfigPath).ReadInteger(ModuleName, 'Method', 1) of
+              1: // Use LoadLibrary method.
+                 if not LoadModule(ModulePath) then
+                   FLog.Add(Format('Task [%d]: Failed to load module: %s', [ThreadID, ModulePath]), ERROR, '', 4)
+                 else
+                   FLog.Add(Format('Task [%d]: Successfully loaded module: %s', [ThreadID, ModuleName]), PLAIN, '', 4);
+              2: // Use injection method.
+                 begin
+                   if TIniFile.Create(FConfigPath).ReadString(ModuleName, 'Target', '') = '' then
+                     FLog.Add(Format('Task [%d]: Target process not specified for injection: %s', [ThreadID, ModuleName]), ERROR, '', 4)
+                   else
+                   begin
+                     Injector := TInjector.Create;
+                     try
+                       InjectionStatus := Injector.LoadLibrary(ModulePath, TIniFile.Create(FConfigPath).ReadString(ModuleName, 'Target', ''));
+                       FLog.Add('Injection method: LoadLibrary', DEBUG, '', 4);
+
+                       if InjectionStatus then FLog.Add(Format('Task [%d]: Sucessfully injected: %s', [ThreadID, ModuleName]), PLAIN, '', 4)
+                       else FLog.Add(Format('Task [%d]: LoadLibrary Injection failed...', [ThreadID]), PLAIN, '', 4);
+                     finally
+                       Injector.Free;
+                     end;
+                   end;
+                 end;
+            else
+              FLog.Add(Format('Task [%d]: Unknown loading method for module: %s', [ThreadID, ModuleName]), ERROR, '', 4);
+            end;
+          except
+            on E: Exception do
+              FLog.Add(Format('Task [%d]: Exception loading module %s - %s', [ThreadID, ModuleName, E.Message]), ERROR, '', 4);
+          end;
+      finally
+        EndTime := Now;
+        FLog.Add(Format('Task [%d]: Completed for %s in %.2fs', [ThreadID, ModuleName, (EndTime - StartTime) * 86400]), PLAIN, '', 4);
+        // Signal that this delayed task is completed.
+        SignalDelayedTaskCompleted;
+      end;
+    end
+  );
+end;
+
+// Searches for a process by name and returns its process ID.
+function TLoader.FindProcessByName(const ProcessName: string): Integer;
+var
+  SnapShot: THandle;
+  ProcessEntry: TProcessEntry32;
+begin
+  Result := -1;
+  SnapShot := CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+  if SnapShot = INVALID_HANDLE_VALUE then Exit;
+  try
+    ProcessEntry.dwSize := SizeOf(ProcessEntry);
+    if Process32First(SnapShot, ProcessEntry) then
+      repeat
+        if SameText(ProcessEntry.szExeFile, ProcessName) then
+        begin
+          Result := ProcessEntry.th32ProcessID;
+          Break;
+        end;
+      until not Process32Next(SnapShot, ProcessEntry);
   finally
-    // Free the list of found files
-    FoundFilesList.Free;
-  end;
-
-  // Return the path of the best file found
-  Result := BestFile;
-end;
-
-
-function TLoader.LoadModule(const ModulePath: string): Boolean;
-var
-  ModuleHandle: HMODULE;
-begin
-  Result := False; // Initialize result as False indicating failure to load
-
-  // Check if the module is compatible with the host architecture
-  if not IsCompatible(ModulePath) then
-  begin
-    Log.Add('LoadLib failed, ' + ExtractFileName(ModulePath) + ' is not compatible with the host architecture.', ERROR, '', 4);
-    Exit; // Exit if the module is not compatible
-  end;
-
-  // Attempt to load the module
-  ModuleHandle := LoadLibrary(PChar(ModulePath));
-
-  // Check if the module was successfully loaded
-  if ModuleHandle <> 0 then
-  begin
-    // Add the module handle to the dictionary
-    LoadedModuleHandles.Add(ExtractFileName(ModulePath), ModuleHandle);
-    // Add the module path to the list of loaded modules
-    LoadedModules.Add(ModulePath);
-    // Log the success message
-    Log.Add('Success, loaded ' + ModulePath, CUSTOM, 'LoadLib', 4);
-    Result := True; // Set result as True indicating success
-  end
-  else
-  begin
-    // Log the failure message with the error
-    Log.Add('Failed to load Module: ' + ModulePath + ' Error: ' + SysErrorMessage(GetLastError), ERROR, '', 4);
+    CloseHandle(SnapShot);
   end;
 end;
 
-
-function TLoader.IsCompatible(const ModulePath: string): Boolean;
-var
-  HostIsX64, DllIsX64: Boolean;
-begin
-  // Determine if the host application is 64-bit
-  HostIsX64 := IsHostX64;
-  // Determine if the DLL is 64-bit
-  DllIsX64 := IsDllX64(ModulePath);
-
-  // Log the architecture of the host application
-  case HostIsX64 of
-    True: Log.Add('Host is x64', DEBUG, '', 8);
-    False: Log.Add('Host is x86', DEBUG, '', 8);
-  end;
-
-  // Log the architecture of the DLL
-  case DllIsX64 of
-    True: Log.Add('DLL ' + ExtractFileName(ModulePath) + ' is x64', DEBUG, '', 8);
-    False: Log.Add('DLL ' + ExtractFileName(ModulePath) + ' is x86', DEBUG, '', 8);
-  end;
-
-  // Check if the architectures match
-  Result := HostIsX64 = DllIsX64;
-end;
-
-
-function TLoader.IsHostX64: Boolean;
-var
-  IsWow64: BOOL;
-begin
-  // Determine if the current process is running under WOW64 (Windows 32-bit on Windows 64-bit)
-  if not IsWow64Process(GetCurrentProcess, IsWow64) then
-    RaiseLastOSError;
-
-  // If IsWow64 is FALSE, the host is x64; if TRUE, the host is x86 on a x64 OS
-  Result := not IsWow64;
-end;
-
+// Determines if a DLL is a 64-bit module.
 function TLoader.IsDllX64(const FileName: string): Boolean;
 var
   ModuleHandle: THandle;
   ImageNtHeaders: PImageNtHeaders;
 begin
-  // Load the DLL without resolving references
   ModuleHandle := LoadLibraryEx(PChar(FileName), 0, DONT_RESOLVE_DLL_REFERENCES);
   if ModuleHandle = 0 then RaiseLastOSError;
-
   try
-    // Get the NT headers of the DLL
     ImageNtHeaders := PImageNtHeaders(PByte(ModuleHandle) + PImageDosHeader(ModuleHandle)._lfanew);
-
-    // Check if the DLL is 64-bit
     Result := ImageNtHeaders^.OptionalHeader.Magic = IMAGE_NT_OPTIONAL_HDR64_MAGIC;
   finally
-    // Free the DLL
     FreeLibrary(ModuleHandle);
   end;
 end;
 
+// Determines if the host application is running as a 64-bit process.
+function TLoader.IsHostX64: Boolean;
+var
+  IsWow64: BOOL;
+begin
+  if not IsWow64Process(GetCurrentProcess, IsWow64) then
+    RaiseLastOSError;
+  Result := not IsWow64;
+end;
 
-function TLoader.ReadCFG(const filename: string; const Section, Key: string; const DefaultValue: Variant): Variant;
+// Checks if the module's architecture (x86/x64) is compatible with the host application.
+function TLoader.IsCompatible(const ModulePath: string): Boolean;
+var
+  HostIsX64, DllIsX64: Boolean;
+begin
+  HostIsX64 := IsHostX64;
+  DllIsX64 := IsDllX64(ModulePath);
+  if HostIsX64 then
+    FLog.Add('Host is x64', DEBUG, '', 8)
+  else
+    FLog.Add('Host is x86', DEBUG, '', 8);
+  if DllIsX64 then
+    FLog.Add(ExtractFileName(ModulePath) + ' is x64', DEBUG, '', 8)
+  else
+    FLog.Add(ExtractFileName(ModulePath) + ' is x86', DEBUG, '', 8);
+  Result := HostIsX64 = DllIsX64;
+end;
+
+// Reads a configuration value from the INI file, supporting multiple data types.
+function TLoader.ReadCFG(const filename, Section, Key: string; const DefaultValue: Variant): Variant;
 var
   IniFile: TIniFile;
 begin
-  // Create an instance of TIniFile to read the configuration file
   IniFile := TIniFile.Create(filename);
   try
-    // Determine the type of the default value to decide how to read the configuration value
     case VarType(DefaultValue) of
-      varInteger:
-        // If the default value is an integer, read the configuration value as an integer
-        Result := IniFile.ReadInteger(Section, Key, DefaultValue);
-      varBoolean:
-        // If the default value is a boolean, read the configuration value as a boolean
-        Result := IniFile.ReadBool(Section, Key, DefaultValue);
+      varInteger: Result := IniFile.ReadInteger(Section, Key, DefaultValue);
+      varBoolean: Result := IniFile.ReadBool(Section, Key, DefaultValue);
     else
-      // For all other types (e.g., string), read the configuration value as a string
       Result := IniFile.ReadString(Section, Key, DefaultValue);
     end;
   finally
-    // Free the TIniFile instance to release the file handle and resources
     IniFile.Free;
   end;
 end;
 
-
+// Main execution method that processes immediate modules and waits for delayed tasks.
 procedure TLoader.Execute;
 var
   ModuleName, ModulePath: string;
   RetryCount: Integer;
   LoadedFileNames: TStringList;
+  StartTime, EndTime: TDateTime;
+  AllFilesLoaded: Boolean;
 begin
-  // Log the start of the module loading process
-  Log.Add('Starting Module loading process...', PLAIN, '', 4);
-
-  // Load configuration from the config file
-  LoadConfig(Config);
-
-  // Add a line break and header for the search process
-  Log.LB;
-  Log.Header('Searching specified directories and sub dirs', 4);
-  Log.HR('-', 0, 4);
-
-  // Initialize a list to hold the names of loaded files
+  StartTime := Now;
+  FLog.Add('Starting Module loading process...', PLAIN, '', 4);
+  // Load the configuration and set up tasks.
+  LoadConfig(FConfigPath);
+  if Length(ModulesToLoad) > 0 then
+    FLog.Add(Format('ModulesToLoad contains (%d) modules: %s', [Length(ModulesToLoad), String.Join(',', ModulesToLoad)]), DEBUG, '', 4)
+  else
+    FLog.Add('ModulesToLoad is empty.', DEBUG, '', 4);
   LoadedFileNames := TStringList.Create;
   try
-    // Loop through each module name specified in the configuration
+    AllFilesLoaded := True;
+    // Process each immediate module.
     for ModuleName in ModulesToLoad do
     begin
-      Log.Add('Processing Module: ' + ModuleName, PLAIN, '', 4);
-
-      // Check if the module has already been loaded
+      FLog.Add('Processing Module: ' + ModuleName, PLAIN, '', 4);
       if LoadedModuleHandles.ContainsKey(ModuleName) then
       begin
-        Log.Add('Module already loaded: ' + ModuleName, DEBUG, '', 8);
+        FLog.Add('Module already loaded: ' + ModuleName, DEBUG, '', 8);
         Continue;
       end;
-
-      // Find the module in the specified directories
       ModulePath := FindModule(ModuleName);
-
-      // If the module is not found, log an error and add it to the failed modules list
-      if not FileExists(ModulePath) then
+      if ModulePath = '' then
       begin
-        Log.Add('File ' + ModuleName + ' not found in specified directories.', ERROR, '', 4);
+        FLog.Add(Format('Failed to locate module: %s', [ModuleName]), ERROR, '', 4);
         FailedModules.Add(ModuleName);
+        AllFilesLoaded := False;
         Continue;
       end;
-
-      // Attempt to load the module with retries
       RetryCount := 0;
+      // Attempt to load the module with retry logic.
       while RetryCount < MaxRetries do
       begin
         if LoadModule(ModulePath) then
         begin
-          // If successful, add the file name to the loaded file names list
           LoadedFileNames.Add(ExtractFileName(ModulePath));
-          Break; // Exit retry loop
+          Break;
         end
         else
         begin
-          // Increment retry count and log retry attempt
           Inc(RetryCount);
-          Log.Add('Retrying to load Module: ' + ModuleName + ' (Attempt ' + IntToStr(RetryCount) + ')', ERROR, '', 4);
+          FLog.Add(Format('Retrying to load module: %s (Attempt %d)', [ModuleName, RetryCount]), ERROR, '', 4);
         end;
       end;
-
-      // If maximum retries reached, log an error and add to the failed modules list
       if RetryCount = MaxRetries then
       begin
-        Log.Add('Max retries reached for Module: ' + ModuleName, ERROR, '', 4);
+        FLog.Add(Format('Max retries reached for module: %s', [ModuleName]), ERROR, '', 4);
         FailedModules.Add(ModuleName);
+        AllFilesLoaded := False;
       end;
     end;
-
-    // If there are any failed modules, attempt to load them from the application directory
-    if FailedModules.Count > 0 then
+    // If there are delayed tasks, wait until they are all completed.
+    if (Length(ModulesToLoad) > 0) and (DelayedTasksTotal > 0) then
     begin
-      Log.LB;
-      Log.Header('Search in application/client dir', 4);
-      Log.HR('-', 0, 4);
-      Log.Add('Application/Client Folder: ' + HostAppDirectory, PLAIN, '', 4);
-      Log.Add('Lib-Loader will recursively search for remaining files in ' + HostAppDirectory + ' and sub dirs...', PLAIN, '', 4);
-
-      // Loop through each failed module
-      for ModuleName in FailedModules do
-      begin
-        ModulePath := IncludeTrailingPathDelimiter(HostAppDirectory) + ModuleName;
-
-        // If the module is not found in the application directory, log an error
-        if not FileExists(ModulePath) then
-        begin
-          Log.Add('File ' + ModuleName + ' not found in the application/client directory.', ERROR, '', 4);
-          Continue;
-        end;
-
-        // Attempt to load the module with retries from the application directory
-        RetryCount := 0;
-        while RetryCount < MaxRetries do
-        begin
-          if LoadModule(ModulePath) then
-          begin
-            // If successful, add the file name to the loaded file names list
-            LoadedFileNames.Add(ExtractFileName(ModulePath));
-            Break; // Exit retry loop
-          end
-          else
-          begin
-            // Increment retry count and log retry attempt
-            Inc(RetryCount);
-            Log.Add('Retrying to load Module: ' + ModuleName + ' (Attempt ' + IntToStr(RetryCount) + ')', ERROR, '', 4);
-          end;
-        end;
-
-        // If maximum retries reached, log an error
-        if RetryCount = MaxRetries then
-        begin
-          Log.Add('Max retries reached for Module: ' + ModuleName, ERROR, '', 4);
-        end;
-      end;
+      FLog.Add('Waiting for delayed tasks to complete...', DEBUG, '', 4);
+      FDelayedTaskEvent.WaitFor(INFINITE);
     end;
-
-    // Log the summary of loaded and failed modules
-    Log.LB;
-    Log.HR;
+    FLog.LB;
     if LoadedFileNames.Count > 0 then
-      Log.Add('(' + IntToStr(LoadedFileNames.Count) + ') loaded File(s): ' + LoadedFileNames.CommaText, PLAIN, '', 4)
+      FLog.Add(Format('(%d) loaded File(s): %s', [LoadedFileNames.Count, LoadedFileNames.CommaText]), PLAIN, '', 4)
     else
-      Log.Add('No files were loaded.', PLAIN, '', 4);
-
+      FLog.Add('No files were loaded.', PLAIN, '', 4);
     if FailedModules.Count > 0 then
-      Log.Add('(' + IntToStr(FailedModules.Count) + ') unloaded File(s): ' + FailedModules.CommaText, ERROR, '', 4)
-    else
-      Log.Add('All specified files were loaded.', PLAIN, '', 4);
-
-    Log.Add('Operation completed.', PLAIN, '', 4);
+      FLog.Add(Format('(%d) failed File(s): %s', [FailedModules.Count, FailedModules.CommaText]), ERROR, '', 4)
+    else if AllFilesLoaded then
+      FLog.Add('All non-delayed files were loaded.', PLAIN, '', 4);
   finally
-    // Free the loaded file names list
     LoadedFileNames.Free;
+    EndTime := Now;
+    FLog.Add(Format('Total time taken for loader execution: %.2f seconds', [MilliSecondsBetween(EndTime, StartTime) / 1000]), PLAIN, '', 4);
+    FLog.LB;
+    if DelayedTasksTotal > 0 then
+    begin
+      FLog.Add('Delayed Loading tasks...', PLAIN, '', 4);
+      FLog.HR('-', 0, 4);
+    end;
   end;
 end;
-
 
 initialization
-// Initialize the log and loader instance at the start
-Log := TLog.Create(LOG_FILENAME, 100, False);
-LibLoader := TLoader.Create;
-Log.LB;
-Log.Header('Chain Loader Initializing...');
-Log.HR('=');
-
-// Execute the loader if enabled in the configuration file
-if LibLoader.ReadCFG(Config, 'Loader', 'Enabled', False) and (LibLoader.ReadCFG(Config, 'Loader', 'Files', '') <> '') then
-begin
-  Log.Add('Begin Loader Execution...', PLAIN, '', 4);
-  LibLoader.Execute;
-end
-else
-begin
-  if LibLoader.ReadCFG(Config, 'Loader', 'Files', '') = '' then
-  begin
-    Log.Add('No files specified.', CUSTOM, 'Notice', 4);
-    Log.Add('LoadLib (Chain loading) skipped.', CUSTOM, 'Notice', 4);
+  try
+    // Create the chain loader and log initialization messages.
+    ChainLoader := TChainLoader.Create;
+    ChainLoader.FLog.LB;
+    ChainLoader.FLog.Header('Chain Loader Initializing...');
+    ChainLoader.FLog.HR('=');
+    // Run the chain loader on a background thread.
+    TTask.Run(
+      procedure
+      begin
+        ChainLoader.Run;
+      end
+    );
+  except
+    on E: Exception do
+      WriteLn('Chain Loader initialization error: ', E.Message);
   end;
-  Log.Free;
-  LibLoader.Free;
-end;
 
 finalization
-// Free the log and loader instance when the module is unloaded
-Log.Free;
-LibLoader.Free;
+  ChainLoader.Free;
 
 end.
 

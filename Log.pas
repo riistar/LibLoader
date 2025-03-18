@@ -1,12 +1,3 @@
-unit Log;
-
-{
-To-Do
-
-Allow setting the level of output - Simple / Debug ?
-Toggle for Debug or no Debug messages
-}
-
 // ----------------------------------------------------------------------------
 // Log Unit
 // ----------------------------------------------------------------------------
@@ -83,10 +74,19 @@ Toggle for Debug or no Debug messages
 //
 // ----------------------------------------------------------------------------
 
+{
+To-Do
+
+Allow setting the level of output - Simple / Debug ?
+Toggle for Debug or no Debug messages
+}
+
+unit Log;
+
 interface
 
 uses
-  SysUtils, Classes;
+  Windows, SysUtils, Classes, SyncObjs, System.StrUtils; // Include SyncObjs for TCriticalSection
 
 type
   TLogLevel = (Plain, Error, Custom, Debug);
@@ -96,11 +96,13 @@ type
     FLogFilePath: string;
     FMaxLineWidth: Integer;
     FDebugEnabled: Boolean;
+    FDebugToOutput: Boolean;
+    FLock: TCriticalSection; // Synchronization object for thread safety
 
     procedure AddLogEntry(const LogEntry: string);
     function GenerateHorizontalRule(const RuleChar: Char; LineWidth: Integer; Indentation: Integer): string;
   public
-    constructor Create(const LogFilePath: string; MaxLineWidth: Integer = 0; AppendToLog: Boolean = FALSE);
+    constructor Create(const LogFilePath: string; MaxLineWidth: Integer = 0; AppendToLog: Boolean = FALSE; DebugMode: Integer = 1);
     destructor Destroy; override;
 
     procedure Header(const Text: string; const Indentation: Integer = 0);
@@ -116,24 +118,31 @@ type
 
 implementation
 
-constructor TLog.Create(const LogFilePath: string; MaxLineWidth: Integer = 0; AppendToLog: Boolean = FALSE);
+{ TLog }
+
+constructor TLog.Create(const LogFilePath: string; MaxLineWidth: Integer = 0; AppendToLog: Boolean = FALSE; DebugMode: Integer = 1);
 begin
   FLogFilePath := LogFilePath;
   FMaxLineWidth := MaxLineWidth;
   FDebugEnabled := False;
 
+  FDebugToOutput := DebugMode = 2; // Enable OutputDebugString only if Mode = 2
+
+  FLock := TCriticalSection.Create; // Initialize the critical section
+
   if not AppendToLog then
   begin
-    // Wipe old log file
-    if FileExists(FLogFilePath) then DeleteFile(FLogFilePath);
-    exit;
+    if FileExists(FLogFilePath) then
+      DeleteFile(FLogFilePath); // Wipe old log file
+    Exit;
   end;
 
-  LineBreak; // Write an empty line to seperate the appended log entires
+  LineBreak; // Separate appended log entries
 end;
 
 destructor TLog.Destroy;
 begin
+  FLock.Free; // Free the critical section
   LineBreak; // Write an empty line at the end
   inherited;
 end;
@@ -147,7 +156,7 @@ procedure TLog.Add(const Message: string; const Level: TLogLevel = Plain; const 
 var
   LogEntry: string;
   LevelTag: string;
-  DashCount : Integer;
+  DashCount: Integer;
 begin
   LogEntry := Format('[%s]', [FormatDateTime('dd/mm/yyyy hh:nnampm', Now)]);
 
@@ -164,16 +173,28 @@ begin
       begin
         LevelTag := '[Debug]';
         DashCount := Indentation div 3;
-        if DashCount > 1 then LevelTag := StringOfChar('-', DashCount) + ' ' + LevelTag;
+        if DashCount > 1 then
+          LevelTag := StringOfChar('-', DashCount) + ' ' + LevelTag;
       end
-      else exit; // Skip Debug level if DebugEnabled is False
+      else
+        Exit; // Skip Debug level if DebugEnabled is False
   else
     LevelTag := '';
   end;
 
-  if LevelTag = '' then LogEntry := LogEntry + ' ' + Message
-  else LogEntry := LogEntry + ' ' + LevelTag + ' ' + Message;
+  case IndexStr(LevelTag, ['', '[Debug]']) of
+    0: // Empty LevelTag
+      LogEntry := LogEntry + ' ' + Message;
+    1: // [Debug]
+    begin
+      LogEntry := LogEntry + ' ' + LevelTag + ' ' + Message;
+    end
+  else
+    // Default case for other LevelTag values
+    LogEntry := LogEntry + ' ' + LevelTag + ' ' + Message;
+  end;
 
+  if (FDebugToOutput) then OutputDebugString(PChar(LogEntry)); // Conditional debug output
   AddLogEntry(LogEntry);
 end;
 
@@ -208,16 +229,21 @@ procedure TLog.AddLogEntry(const LogEntry: string);
 var
   LogFile: TextFile;
 begin
-  AssignFile(LogFile, FLogFilePath);
-  if FileExists(FLogFilePath) then
-    Append(LogFile)
-  else
-    Rewrite(LogFile);
-
+  FLock.Enter; // Ensure thread-safe access
   try
-    Writeln(LogFile, LogEntry);
+    AssignFile(LogFile, FLogFilePath);
+    if FileExists(FLogFilePath) then
+      Append(LogFile)
+    else
+      Rewrite(LogFile);
+
+    try
+      Writeln(LogFile, LogEntry);
+    finally
+      CloseFile(LogFile);
+    end;
   finally
-    CloseFile(LogFile);
+    FLock.Leave;
   end;
 end;
 

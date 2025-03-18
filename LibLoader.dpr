@@ -20,8 +20,11 @@ uses
   System.SysUtils,
   System.Classes,
   System.AnsiStrings,
+  Log in 'Log.pas',
   Loader in 'Loader.pas',
-  Log in 'Log.pas';
+  Utils in 'Utils.pas',
+  Injector in 'Injector.pas',
+  LoaderManager in 'LoaderManager.pas';
 
 type
   TOrgFuncs = record
