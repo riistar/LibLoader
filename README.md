@@ -38,7 +38,7 @@ The configuration file remains the heart of the loader’s setup, and this versi
 - **Enabled:**  
   Set to `1` to enable the chain loading process; set to `0` to disable it.
 - **Files:**  
-  A comma-separated list of DLLs to load. List the filenames (e.g., `MabiWnd.dll, BCGv2.dll`). These are the modules that the loader will attempt to find and load.
+  A comma-separated list of DLLs to load. List the filenames (e.g., `Test.dll, Example.dll`). These are the modules that the loader will attempt to find and load.
 - **ModFolders:**  
   A comma-separated list of directories where the loader will recursively search (including subdirectories) for the DLLs specified in the Files list. If a module isn’t found in these folders, the loader will automatically check the host application’s directory.
 
